@@ -1,7 +1,7 @@
 // Проверки «сердца». Запуск: node --test tests/  (без интернета и без телефона)
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { altHint, altTrend, bearing, confidence, distance, exactBits, fmt, gaugePos, grade, hint, mbps, median, offset, places, plausible, route, side, speedParts, toCSV } from "../core.js";
+import { altHint, altTrend, bearing, confidence, createStepDetector, distance, insError, moveBy, exactBits, fmt, gaugePos, grade, hint, mbps, median, netClass, offset, places, plausible, route, side, speedParts, toCSV } from "../core.js";
 
 const A = { lat: 55.8849, lon: 26.5009 };
 
@@ -93,6 +93,36 @@ test("локатор: путь по пройденным точкам к луч�
   assert.equal(route(trail[5], P).length, 1);
   const o = offset(A, { lat: A.lat + 0.001, lon: A.lon });
   assert.ok(Math.abs(o.x) < 0.5 && o.y < -100);
+});
+
+test("ИНС: сдвиг по шагам, шагомер, погрешность", () => {
+  const n = moveBy(A, 100, 0);
+  assert.ok(Math.abs(distance(A, n) - 100) < 0.5);
+  assert.equal(side(bearing(A, n)), "север");
+  const e = moveBy(A, 70, 90);
+  assert.ok(Math.abs(distance(A, e) - 70) < 0.5);
+  assert.equal(side(bearing(A, e)), "восток");
+  // 10 секунд ходьбы: ~2 шага в секунду (синус ускорения ±3 м/с²) → около 20 шагов
+  const feed = createStepDetector();
+  let steps = 0;
+  for (let t = 0; t < 10000; t += 20) if (feed(t, 9.81 + 3 * Math.sin((2 * Math.PI * 2 * t) / 1000))) steps++;
+  assert.ok(steps >= 17 && steps <= 21, `шагов: ${steps}`);
+  // Стоим, рука дрожит слегка — шагов нет
+  const still = createStepDetector();
+  let s2 = 0;
+  for (let t = 0; t < 10000; t += 20) if (still(t, 9.81 + 0.2 * Math.sin(t / 37))) s2++;
+  assert.equal(s2, 0);
+  assert.equal(insError(5, 200), 15);
+});
+
+test("класс связи по скорости: 2G/3G/4G/5G", () => {
+  assert.equal(netClass(0.05, 600), "2G");
+  assert.equal(netClass(1, 1500), "2G"); // пинг больше секунды — как 2G
+  assert.equal(netClass(1.5, 120), "3G");
+  assert.equal(netClass(25, 40), "4G");
+  assert.equal(netClass(120, 20), "5G");
+  assert.equal(netClass(120, 60), "4G"); // быстро, но пинг большой — хороший 4G
+  assert.equal(netClass(0, null), "");
 });
 
 test("подсказки по высоте", () => {

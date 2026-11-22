@@ -72,6 +72,18 @@ export function grade(speed) {
   return { word: "нет связи", level: 1, can: "попробуйте выше или на открытом месте" };
 }
 
+/**
+ * Класс связи «как 2G/3G/4G/5G» — по измеренной скорости и пингу.
+ * Настоящий тип сети браузер не видит, поэтому это оценка: на что связи реально хватает.
+ */
+export function netClass(speed, ping) {
+  if (!(speed > 0)) return "";
+  if (speed < 0.1 || (ping != null && ping > 1000)) return "2G";
+  if (speed < 3) return "3G";
+  if (speed >= 50 && (ping == null || ping <= 35)) return "5G";
+  return "4G";
+}
+
 /** Скорость в удобных единицах: бит/с, кбит/с или Мбит/с. */
 export function speedParts(speed) {
   const bps = speed * 1e6;
@@ -142,6 +154,37 @@ export function hint(here, best) {
   if (d < 8) return "Вы на лучшем месте";
   const m = d < 1000 ? `${Math.round(d)} м` : `${fmt(d / 1000)} км`;
   return `${m} на ${side(bearing(here, best))}`;
+}
+
+// ---------- ИНС: инерциальная навигация по шагам (когда GPS плохой или пропал) ----------
+
+/** Сдвинуть точку на meters метров по направлению headingDeg (0 — север, 90 — восток). */
+export function moveBy(p, meters, headingDeg) {
+  const h = (headingDeg * Math.PI) / 180;
+  const dLat = (meters * Math.cos(h)) / R;
+  const dLon = (meters * Math.sin(h)) / (R * Math.cos(rad(p.lat)));
+  return { lat: p.lat + (dLat * 180) / Math.PI, lon: p.lon + (dLon * 180) / Math.PI };
+}
+
+/**
+ * Шагомер по датчику ускорения. На вход — время (мс) и сила ускорения с учётом тяжести (м/с²).
+ * Сглаживаем, ловим подъём выше порога, не чаще одного шага в 280 мс (больше ~3,5 шага/с человек не делает).
+ */
+export function createStepDetector({ threshold = 1.1, minGap = 280 } = {}) {
+  let smooth = 9.81, base = 9.81, armed = true, lastStep = -Infinity;
+  return function feed(t, magnitude) {
+    smooth = smooth * 0.75 + magnitude * 0.25; // убрать дрожание руки
+    base = base * 0.98 + magnitude * 0.02; // медленная «середина» (тяжесть)
+    const d = smooth - base;
+    if (armed && d > threshold && t - lastStep >= minGap) { armed = false; lastStep = t; return true; }
+    if (d < threshold * 0.3) armed = true;
+    return false;
+  };
+}
+
+/** Погрешность места при счёте по шагам: ошибка последнего GPS + ~5% пройденного. */
+export function insError(lastGpsAcc, metersSinceFix) {
+  return Math.round((lastGpsAcc ?? 10) + metersSinceFix * 0.05);
 }
 
 /**

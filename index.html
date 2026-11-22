@@ -16,6 +16,7 @@
       <div class="brand">ГДЕ&nbsp;ЛОВИТ <span class="model">ДЕТЕКТОР СВЯЗИ · ДС-1</span></div>
       <div class="leds">
         <span id="bat" class="bat"></span><span class="led" id="ledGps" title="GPS"></span><span class="ledname">GPS</span>
+        <span class="led" id="ledIns" title="Навигация по шагам"></span><span class="ledname">ИНС</span>
         <span class="led" id="ledNet" title="Сеть"></span><span class="ledname" id="net">NET</span>
       </div>
     </header>
@@ -33,7 +34,7 @@
         <g id="ticks"></g>
         <g id="needle" class="needle"><line x1="150" y1="150" x2="150" y2="44" /><circle cx="150" cy="150" r="9" /></g>
       </svg>
-      <div class="readout"><span id="val">--.-</span><span class="unit" id="unit">Мбит/с</span></div>
+      <div class="readout"><span id="val">--.-</span><span class="unit" id="unit">Мбит/с</span><span class="gen" id="gen" title="Класс связи по скорости и пингу (оценка)"></span></div>
       <div class="sub"><span id="word">ОЖИДАНИЕ</span> · ПИНГ <span id="ping">---</span> мс</div>
       <div class="exact" id="exact">ТОЧНО: — бит/с</div>
       <div class="bar" id="bar"></div>
@@ -48,6 +49,7 @@
         <label class="sw"><input id="sound" type="checkbox" /><span>ЗВУК</span></label>
         <label class="sw"><input id="eco" type="checkbox" /><span>ЭКО</span></label>
         <label class="sw"><input id="forest" type="checkbox" /><span>ЛЕС 🔋</span></label>
+        <label class="sw"><input id="ins" type="checkbox" /><span>ИНС 👣</span></label>
       </div>
     </section>
 
@@ -72,6 +74,7 @@
     <section class="panel">
       <div class="phead"><div class="ptitle">ЖУРНАЛ</div><span id="used" class="dim"></span></div>
       <ul id="log" class="list small"></ul>
+      <label class="steplen">ДЛИНА ШАГА <input id="stepcm" type="number" min="40" max="120" step="1" inputmode="numeric" /> см · для ИНС</label>
       <div class="row"><button id="csv" class="mini">ТАБЛИЦА CSV</button><button id="clear" class="mini danger">СТЕРЕТЬ ВСЁ</button></div>
     </section>
 
