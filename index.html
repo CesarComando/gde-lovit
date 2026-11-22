@@ -15,7 +15,7 @@
     <header class="top">
       <div class="brand">ГДЕ&nbsp;ЛОВИТ <span class="model">ДЕТЕКТОР СВЯЗИ · ДС-1</span></div>
       <div class="leds">
-        <span class="led" id="ledGps" title="GPS"></span><span class="ledname">GPS</span>
+        <span id="bat" class="bat"></span><span class="led" id="ledGps" title="GPS"></span><span class="ledname">GPS</span>
         <span class="led" id="ledNet" title="Сеть"></span><span class="ledname" id="net">NET</span>
       </div>
     </header>
@@ -47,6 +47,7 @@
         <label class="sw"><input id="search" type="checkbox" /><span>ПОИСК ∞</span></label>
         <label class="sw"><input id="sound" type="checkbox" /><span>ЗВУК</span></label>
         <label class="sw"><input id="eco" type="checkbox" /><span>ЭКО</span></label>
+        <label class="sw"><input id="forest" type="checkbox" /><span>ЛЕС 🔋</span></label>
       </div>
     </section>
 
@@ -61,11 +62,13 @@
           <div class="tnote" id="tnote"></div>
         </div>
       </div>
+      <div class="trend" id="trend"></div>
     </section>
 
     <section class="panel">
       <div class="phead"><div class="ptitle">МЕСТА</div><button id="showMap" class="mini">КАРТА</button></div>
       <div id="map" class="hidden"></div>
+      <p class="dim mapnote">Карта сохраняется в телефоне сама. Перед походом дома на Wi-Fi откройте карту и пролистайте свой район на разных приближениях — в лесу он откроется без интернета.</p>
       <ol id="places" class="list"></ol>
     </section>
 

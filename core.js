@@ -92,6 +92,7 @@ export function places(measures, radius = 15) {
       lon: g.center.lon,
       speed: avg(g.items.map((i) => i.mbps)),
       ping: avg(g.items.map((i) => i.ping).filter((p) => p != null)),
+      alt: avg(g.items.map((i) => i.alt).filter((a) => a != null)),
       count: g.items.length,
       label: g.items.map((i) => i.label).filter(Boolean).at(-1) || "",
       last: Math.max(...g.items.map((i) => i.time)),
@@ -112,15 +113,40 @@ export function hint(here, best) {
   return `${m} на ${side(bearing(here, best))}`;
 }
 
+/**
+ * Подсказка по высоте. GPS-высота неточная (±10–20 м), поэтому разницу меньше 8 м не считаем.
+ * here/best: { alt } в метрах. Возвращает текст или "".
+ */
+export function altHint(hereAlt, bestAlt) {
+  if (hereAlt == null || bestAlt == null) return "";
+  const d = Math.round(bestAlt - hereAlt);
+  if (d >= 8) return `лучшее место выше на ~${d} м — поднимитесь`;
+  if (d <= -8) return `лучшее место ниже на ~${-d} м`;
+  return "высота почти та же";
+}
+
+/** Средняя высота лучших и худших замеров: помогает понять, «ловит ли выше» в этой местности. */
+export function altTrend(measures) {
+  const withAlt = measures.filter((m) => m.ok && m.alt != null);
+  if (withAlt.length < 4) return "";
+  const sorted = [...withAlt].sort((a, b) => b.mbps - a.mbps);
+  const half = Math.floor(sorted.length / 2);
+  const avgAlt = (xs) => xs.reduce((s, m) => s + m.alt, 0) / xs.length;
+  const d = Math.round(avgAlt(sorted.slice(0, half)) - avgAlt(sorted.slice(-half)));
+  if (d >= 5) return `Здесь связь лучше выше: хорошие точки в среднем на ${d} м выше плохих`;
+  if (d <= -5) return `Здесь связь лучше ниже: хорошие точки в среднем на ${-d} м ниже`;
+  return "";
+}
+
 /** Таблица для Excel (CSV, разделитель «;»). */
 export function toCSV(measures) {
-  const head = "Дата;Время;Мбит/с;Бит/с точно;Байт скачано;Время замера мс;Пинг мс;Широта;Долгота;Точность м;Сеть;Метка";
+  const head = "Дата;Время;Мбит/с;Бит/с точно;Байт скачано;Время замера мс;Пинг мс;Широта;Долгота;Точность м;Высота м;Сеть;Метка";
   const rows = measures.map((m) => {
     const d = new Date(m.time);
     const date = d.toLocaleDateString("ru-RU");
     const time = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
     const clean = (s) => String(s ?? "").replace(/[;\n\r]/g, " ");
-    return [date, time, fmt(m.mbps), Math.round(m.mbps * 1e6), m.bytes ?? "", m.ms != null ? Math.round(m.ms) : "", m.ping ?? "", m.lat ?? "", m.lon ?? "", m.acc != null ? Math.round(m.acc) : "", clean(m.net), clean(m.label)].join(";");
+    return [date, time, fmt(m.mbps), Math.round(m.mbps * 1e6), m.bytes ?? "", m.ms != null ? Math.round(m.ms) : "", m.ping ?? "", m.lat ?? "", m.lon ?? "", m.acc != null ? Math.round(m.acc) : "", m.alt != null ? Math.round(m.alt) : "", clean(m.net), clean(m.label)].join(";");
   });
   return [head, ...rows].join("\r\n");
 }

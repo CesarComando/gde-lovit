@@ -1,7 +1,7 @@
 // Проверки «сердца». Запуск: node --test tests/  (без интернета и без телефона)
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bearing, distance, exactBits, fmt, gaugePos, grade, hint, mbps, places, side, speedParts, toCSV } from "../core.js";
+import { altHint, altTrend, bearing, distance, exactBits, fmt, gaugePos, grade, hint, mbps, places, side, speedParts, toCSV } from "../core.js";
 
 const A = { lat: 55.8849, lon: 26.5009 };
 
@@ -55,11 +55,20 @@ test("близкие замеры — одно место, лучшие свер
   assert.equal(hint(A, p[1]), "Вы на лучшем месте");
 });
 
+test("подсказки по высоте", () => {
+  assert.equal(altHint(120, 140), "лучшее место выше на ~20 м — поднимитесь");
+  assert.equal(altHint(120, 125), "высота почти та же");
+  assert.equal(altHint(null, 140), "");
+  const ms = [10, 8, 1, 0.5].map((v, i) => ({ ok: true, mbps: v, alt: [150, 148, 120, 118][i] }));
+  assert.match(altTrend(ms), /лучше выше: .* на 30 м/);
+  assert.equal(altTrend(ms.slice(0, 3)), "");
+});
+
 test("CSV для Excel", () => {
   const csv = toCSV([{ time: Date.UTC(2026, 10, 22, 10, 0), mbps: 0.56, ping: 120, lat: 1, lon: 2, acc: 9.6, net: "4g", label: "у окна; кухня" }]);
   const [head, row] = csv.split("\r\n");
-  assert.equal(head.split(";").length, 12);
-  assert.equal(row.split(";").length, 12);
+  assert.equal(head.split(";").length, 13);
+  assert.equal(row.split(";").length, 13);
   assert.ok(row.includes(";560000;"));
   assert.ok(row.includes("0,56") && row.includes("у окна  кухня"));
 });

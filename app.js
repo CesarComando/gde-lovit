@@ -1,5 +1,5 @@
 // Окно «детектора»: прибор, скан, компас к лучшему месту, звук. Расчёты — в core.js.
-import { bearing, distance, exactBits, fmt, gaugePos, grade, hint, mbps, places, side, speedParts, toCSV } from "./core.js";
+import { altHint, altTrend, bearing, distance, exactBits, fmt, gaugePos, grade, hint, mbps, places, side, speedParts, toCSV } from "./core.js";
 
 const sp = (v) => { const p = speedParts(v); return `${p.value} ${p.unit}`; };
 
@@ -72,7 +72,7 @@ function where() {
   return new Promise((resolve) => {
     if (!navigator.geolocation) return resolve(null);
     navigator.geolocation.getCurrentPosition(
-      (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy }),
+      (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, alt: p.coords.altitude }),
       () => resolve(null),
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 },
     );
@@ -137,7 +137,7 @@ async function measure() {
   const speed = d.bytes > 0 ? mbps(d.bytes, d.ms) : 0;
   const m = {
     time: Date.now(), mbps: speed, ping: p, ok: p != null, bytes: d.bytes, ms: Math.round(d.ms),
-    lat: geo?.lat ?? null, lon: geo?.lon ?? null, acc: geo?.acc ?? null,
+    lat: geo?.lat ?? null, lon: geo?.lon ?? null, acc: geo?.acc ?? null, alt: geo?.alt ?? null,
     net: netInfo(), label: $("label").value.trim().slice(0, 40),
   };
   if (geo) here = { lat: geo.lat, lon: geo.lon };
@@ -171,7 +171,7 @@ async function probe() {
     p = Math.round(performance.now() - t);
   } catch { /* нет связи */ }
   if (p == null) return { ok: false, mbps: 0, ping: null, bytes: 0, ms: 0 };
-  const d = await download(p, { maxBytes: S.eco ? 30_000 : 150_000, maxMs: p > 800 ? 6000 : 2500, quiet: true });
+  const d = await download(p, { maxBytes: S.eco || S.forest ? 30_000 : 150_000, maxMs: p > 800 ? 6000 : 2500, quiet: true });
   return { ok: true, ping: p, bytes: d.bytes, ms: Math.round(d.ms), mbps: d.bytes ? mbps(d.bytes, d.ms) : 0 };
 }
 
@@ -184,7 +184,7 @@ async function searchLoop() {
       const r = await probe();
       if (!searching) break;
       S.usedBytes += r.bytes;
-      const m = { time: Date.now(), ...r, lat: here?.lat ?? null, lon: here?.lon ?? null, acc: hereAcc, net: netInfo(), label: $("label").value.trim().slice(0, 40) };
+      const m = { time: Date.now(), ...r, lat: here?.lat ?? null, lon: here?.lon ?? null, acc: hereAcc, alt: hereAlt, net: netInfo(), label: $("label").value.trim().slice(0, 40) };
       showNow(m, true);
       geigerRate(r.ok ? gaugePos(r.mbps) : 0);
       if (prevOk === false && r.ok) alarm();
@@ -194,7 +194,7 @@ async function searchLoop() {
       save();
       $("status").textContent = `ПОИСК… ${r.ok ? grade(r.mbps).can : "связи нет — идите выше или на открытое место"}`;
     }
-    await sleep(Math.max(300, 3000 - (performance.now() - t0)));
+    await sleep(Math.max(300, (S.forest ? 15000 : 3000) - (performance.now() - t0)));
   }
   geigerStop();
   document.querySelector(".gaugebox").classList.remove("scanning");
@@ -244,7 +244,7 @@ function showNow(m, quiet = false) {
 }
 
 // ---------- Цель и списки ----------
-let here = null, hereAcc = null, heading = null;
+let here = null, hereAcc = null, hereAlt = null, heading = null;
 function render() {
   const P = places(S.measures);
   const b = P[0];
@@ -254,7 +254,8 @@ function render() {
     if (here) {
       const d = distance(here, b);
       $("tdist").textContent = d < 8 ? "ВЫ ЗДЕСЬ" : d < 1000 ? `${Math.round(d)} м` : `${fmt(d / 1000)} км`;
-      $("tnote").textContent = d < 8 ? "Лучшее место — прямо тут" : `на ${side(bearing(here, b))}${heading == null ? " · стрелка относительно севера" : " · стрелка по компасу"}`;
+      const ah = altHint(hereAlt, b.alt);
+      $("tnote").textContent = (d < 8 ? "Лучшее место — прямо тут" : `на ${side(bearing(here, b))}${heading == null ? " · стрелка относительно севера" : " · стрелка по компасу"}`) + (ah && d >= 8 ? ` · ${ah}` : "");
     } else {
       $("tdist").textContent = "—";
       $("tnote").textContent = "Нажмите СКАН, чтобы узнать, куда идти";
@@ -265,6 +266,8 @@ function render() {
     $("tnote").textContent = "";
   }
   updateArrow();
+  const trend = altTrend(S.measures);
+  $("trend").textContent = trend ? "⛰ " + trend : "";
 
   const top = P[0]?.speed || 1;
   $("places").innerHTML = P.slice(0, 20).map((p, i) => {
@@ -332,7 +335,7 @@ async function openMap() {
   }
   if (!mapObj) {
     mapObj = L.map(box);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(mapObj);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, crossOrigin: "anonymous", attribution: "© OpenStreetMap" }).addTo(mapObj);
   }
   drawMap(places(S.measures));
 }
@@ -362,6 +365,11 @@ $("search").onchange = (e) => { audio()?.resume?.(); startCompass(); setSearch(e
 document.addEventListener("visibilitychange", async () => { if (searching && document.visibilityState === "visible") { try { wake = await navigator.wakeLock?.request("screen"); } catch { /* ок */ } } });
 $("sound").onchange = (e) => { S.sound = e.target.checked; save(); if (S.sound) { audio()?.resume?.(); click(); } };
 $("eco").onchange = (e) => { S.eco = e.target.checked; save(); };
+$("forest").onchange = (e) => { S.forest = e.target.checked; save(); applyForest(); toast(S.forest ? "ЛЕС: поиск раз в 15 с, малый трафик, без анимаций. Убавьте яркость экрана" : "ЛЕС выключен"); };
+function applyForest() { document.body.classList.toggle("forest", !!S.forest); $("forest").checked = !!S.forest; }
+applyForest();
+// Заряд батареи (Android Chrome)
+navigator.getBattery?.().then((b) => { const show = () => { $("bat").textContent = `🔋${Math.round(b.level * 100)}%`; $("bat").classList.toggle("low", b.level < 0.2 && !b.charging); if (b.level < 0.2 && !b.charging && !S.forest) toast("Батарея меньше 20% — включите режим ЛЕС"); }; show(); b.onlevelchange = show; }).catch(() => {});
 $("showMap").onclick = () => openMap().catch(() => toast("Карта не загрузилась — нет интернета?"));
 $("log").onclick = (e) => {
   const i = e.target.dataset?.del;
@@ -381,7 +389,7 @@ $("csv").onclick = () => {
 // Текущее место — для цели и стрелки (обновляется при движении).
 if (navigator.geolocation) {
   navigator.geolocation.watchPosition(
-    (p) => { here = { lat: p.coords.latitude, lon: p.coords.longitude }; hereAcc = p.coords.accuracy; $("ledGps").className = "led " + (p.coords.accuracy > 30 ? "warn" : "on"); render(); },
+    (p) => { here = { lat: p.coords.latitude, lon: p.coords.longitude }; hereAcc = p.coords.accuracy; hereAlt = p.coords.altitude; $("ledGps").className = "led " + (p.coords.accuracy > 30 ? "warn" : "on"); render(); },
     () => { $("ledGps").className = "led off"; },
     { enableHighAccuracy: true, maximumAge: 10000 },
   );
