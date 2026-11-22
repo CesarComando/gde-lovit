@@ -1,6 +1,6 @@
 // Работа без интернета: окно приложения хранится в телефоне.
 // При каждой правке файлов увеличивать VERSION.
-const VERSION = "gde-lovit-v9";
+const VERSION = "gde-lovit-v10";
 const TILES = "gde-lovit-tiles"; // карта: отдельный кэш, не стирается при обновлении приложения
 const MAX_TILES = 3000;
 const FILES = ["./", "index.html", "style.css", "app.js", "core.js", "manifest.json", "icon.svg", "vendor/leaflet.js", "vendor/leaflet.css"];

@@ -130,17 +130,27 @@ export function places(measures, radius = 15) {
     }
   }
   return groups
-    .map((g) => ({
-      lat: g.center.lat,
-      lon: g.center.lon,
-      speed: avg(g.items.map((i) => i.mbps)),
-      ping: avg(g.items.map((i) => i.ping).filter((p) => p != null)),
-      alt: avg(g.items.map((i) => i.alt).filter((a) => a != null)),
-      count: g.items.length,
-      label: g.items.map((i) => i.label).filter(Boolean).at(-1) || "",
-      last: Math.max(...g.items.map((i) => i.time)),
-    }))
-    .sort((a, b) => b.speed - a.speed);
+    .map((g) => {
+      const sp = g.items.map((i) => i.mbps);
+      const med = median(sp);
+      const spreadBig = sp.length >= 2 && med > 0 && (Math.max(...sp) - Math.min(...sp)) / med > 1;
+      return {
+        lat: g.center.lat,
+        lon: g.center.lon,
+        speed: med, // медиана — случайный пик не поднимает место наверх
+        ping: median(g.items.map((i) => i.ping)),
+        alt: avg(g.items.map((i) => i.alt).filter((a) => a != null)),
+        count: g.items.length,
+        bytes: g.items.reduce((s, i) => s + (i.bytes || 0), 0),
+        acc: median(g.items.map((i) => i.acc)),
+        ins: g.items.some((i) => i.ins),
+        stability: g.items.length === 1 ? "1 замер — повторите" : spreadBig ? `разброс большой: ${g.items.length} замера` : `стабильно: ${g.items.length} ${g.items.length < 5 ? "замера" : "замеров"}`,
+        label: g.items.map((i) => i.label).filter(Boolean).at(-1) || "",
+        last: Math.max(...g.items.map((i) => i.time)),
+        score: med * (g.items.length === 1 ? 0.7 : 1), // один замер — меньше доверия: случайный пик не обгонит проверенное место
+      };
+    })
+    .sort((a, b) => b.score - a.score);
 }
 
 function avg(xs) {
@@ -212,18 +222,71 @@ export function fixStatus({ ins, acc, ageSec, compassBad }) {
 
 /** Журнал прогулки для разбора ошибок: время, режим, место, точность, шаги, курс и разброс компаса. */
 export function trackCSV(track) {
-  const head = "Время;Режим;Широта;Долгота;Точность м;Шагов всего;Курс °;Разброс компаса °;Длина шага см;Мбит/с";
+  const head = "Время;Режим;Широта;Долгота;Точность м;Шагов всего;Курс °;Разброс компаса °;Длина шага см;Мбит/с;GPS-точка получена;GPS заявл. точность м";
   const rows = track.map((r) => [
     new Date(r.t).toLocaleTimeString("ru-RU"), r.mode, r.lat?.toFixed(6) ?? "", r.lon?.toFixed(6) ?? "",
     r.acc != null ? Math.round(r.acc) : "", r.steps ?? "", r.hdg != null ? Math.round(r.hdg) : "", r.spread ?? "", r.stepCm ?? "",
-    r.mbps != null ? fmt(r.mbps) : "",
+    r.mbps != null ? fmt(r.mbps) : "", r.gpsT ? new Date(r.gpsT).toLocaleTimeString("ru-RU") : "", r.gpsAcc != null ? Math.round(r.gpsAcc) : "",
   ].join(";"));
   return [head, ...rows].join("\r\n");
 }
 
-/** Погрешность места при счёте по шагам: ошибка последнего GPS + ~5% пройденного. */
-export function insError(lastGpsAcc, metersSinceFix) {
-  return Math.round((lastGpsAcc ?? 10) + metersSinceFix * 0.05);
+/**
+ * Погрешность места при счёте по шагам: ошибка последнего GPS + ~5% пройденного.
+ * Если компас ненадёжный — направление неточное, погрешность растёт втрое быстрее (~15%).
+ */
+export function insError(lastGpsAcc, metersSinceFix, compassBad = false) {
+  return Math.round((lastGpsAcc ?? 10) + metersSinceFix * (compassBad ? 0.15 : 0.05));
+}
+
+/**
+ * GPS-фильтр по серии точек, а не по одной.
+ * - Режим «плохо» включается, только если 3 свежие точки подряд хуже good метров.
+ * - Одиночный выброс (точка прыгнула дальше, чем можно пройти) игнорируется, пока следующая точка его не подтвердит.
+ * - После «плохо» GPS считается вернувшимся по 2 согласованным хорошим точкам; место — их среднее с весом по точности.
+ * feed({ t, lat, lon, acc }) → { good, pos, acc, changed: "lost" | "back" | null }
+ */
+export function createGpsFilter({ good = 25, maxSpeed = 8 } = {}) {
+  let state = "init", pos = null, posAcc = null, lastT = null, badRun = 0, pend = [], cand = null;
+  const wavg = (pts) => {
+    const w = pts.map((p) => 1 / Math.max(1, p.acc) ** 2), sw = w.reduce((a, b) => a + b, 0);
+    return { lat: pts.reduce((a, p, i) => a + p.lat * w[i], 0) / sw, lon: pts.reduce((a, p, i) => a + p.lon * w[i], 0) / sw, acc: Math.min(...pts.map((p) => p.acc)) };
+  };
+  return function feed(f) {
+    let changed = null;
+    const ok = f.acc <= good;
+    if (state === "init") {
+      pos = { lat: f.lat, lon: f.lon }; posAcc = f.acc; lastT = f.t; state = ok ? "good" : "bad";
+      return { good: ok, pos, acc: posAcc, changed };
+    }
+    if (state === "good") {
+      if (!ok) {
+        badRun++;
+        if (badRun >= 3) { state = "bad"; changed = "lost"; pend = []; }
+        return { good: state === "good", pos, acc: posAcc, changed };
+      }
+      badRun = 0;
+      const dt = Math.max(1, (f.t - lastT) / 1000);
+      const jump = distance(pos, f);
+      if (jump > posAcc + f.acc + maxSpeed * dt) {
+        // выброс? ждём подтверждения следующей точкой
+        if (cand && distance(cand, f) <= cand.acc + f.acc) { const m = wavg([cand, f]); pos = { lat: m.lat, lon: m.lon }; posAcc = m.acc; lastT = f.t; cand = null; }
+        else cand = { ...f };
+        return { good: true, pos, acc: posAcc, changed };
+      }
+      cand = null; pos = { lat: f.lat, lon: f.lon }; posAcc = f.acc; lastT = f.t;
+      return { good: true, pos, acc: posAcc, changed };
+    }
+    // state === "bad": ждём 2 согласованные хорошие точки
+    if (!ok) { pend = []; return { good: false, pos, acc: posAcc, changed }; }
+    pend.push({ ...f });
+    if (pend.length > 2) pend.shift();
+    if (pend.length === 2 && distance(pend[0], pend[1]) <= pend[0].acc + pend[1].acc) {
+      const m = wavg(pend);
+      pos = { lat: m.lat, lon: m.lon }; posAcc = m.acc; lastT = f.t; state = "good"; badRun = 0; pend = []; changed = "back";
+    }
+    return { good: state === "good", pos, acc: posAcc, changed };
+  };
 }
 
 /**

@@ -147,6 +147,30 @@ body:not(.forest) .radar .beamg { animation: spin 3s linear infinite; transform-
 .introbox p { font-size: 14px; line-height: 1.5; margin: 8px 0 14px; }
 .mini.go2 { background: var(--glow); color: #03140a; border-color: var(--glow); }
 
+/* Вкладки и нижнее меню */
+body { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+.tab { display: grid; gap: 12px; }
+.tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 900; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); background: rgba(5,11,7,.96); border-top: 1px solid var(--edge); backdrop-filter: blur(6px); }
+.tb { background: transparent; border: 0; color: var(--dim); font: 700 10px var(--mono); letter-spacing: .12em; padding: 6px 0; border-radius: 10px; cursor: pointer; }
+.tb b { display: block; font-size: 18px; margin-bottom: 2px; font-weight: 400; }
+.tb.on { color: var(--glow); background: #0b1f12; text-shadow: 0 0 8px rgba(45,255,122,.5); }
+/* Карточка состояния */
+.statuscard { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
+.scicon { width: 42px; height: 42px; flex: none; border-radius: 12px; display: grid; place-items: center; font-size: 22px; background: #0b1f12; border: 1px solid var(--edge2); }
+.sctext { flex: 1; min-width: 0; }
+.statuscard .fix { margin: 0; padding: 0; border: 0; background: none; display: block; font-size: 17px; }
+.scsub { font-size: 12px; color: var(--text); margin-top: 3px; line-height: 1.35; }
+.scbadge { flex: none; font: 800 11px var(--mono); letter-spacing: .08em; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--glow-dim); color: var(--glow); }
+.statuscard.ins { border-color: var(--amber); } .statuscard.ins .scbadge { color: var(--amber); border-color: var(--amber); } .statuscard.ins .scicon { border-color: var(--amber); }
+.statuscard.bad { border-color: var(--red); } .statuscard.bad .scbadge { color: var(--red); border-color: var(--red); }
+/* КАРТА / РАДАР */
+.seg { display: inline-flex; border: 1px solid var(--edge2); border-radius: 10px; overflow: hidden; }
+.segb { background: transparent; border: 0; color: var(--dim); font: 700 11px var(--mono); letter-spacing: .14em; padding: 8px 14px; cursor: pointer; }
+.segb.on { background: var(--glow); color: #03140a; }
+.target #map { height: 320px; margin: 4px 0 12px; }
+.switches.left { justify-content: flex-start; margin-top: 10px; }
+.placenote { margin: 0 0 10px; font-size: 11px; line-height: 1.45; }
+
 /* Списки */
 .list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .list li { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 10px; background: #030805; border: 1px solid #0f2116; }

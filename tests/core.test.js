@@ -1,7 +1,7 @@
 // Проверки «сердца». Запуск: node --test tests/  (без интернета и без телефона)
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { altHint, altTrend, bearing, confidence, createStepDetector, distance, fixStatus, headingSpread, insError, moveBy, stepFromWalk, trackCSV, exactBits, fmt, gaugePos, grade, hint, mbps, median, netClass, offset, places, plausible, route, side, speedParts, toCSV } from "../core.js";
+import { altHint, altTrend, bearing, confidence, createGpsFilter, createStepDetector, distance, fixStatus, headingSpread, insError, moveBy, stepFromWalk, trackCSV, exactBits, fmt, gaugePos, grade, hint, mbps, median, netClass, offset, places, plausible, route, side, speedParts, toCSV } from "../core.js";
 
 const A = { lat: 55.8849, lon: 26.5009 };
 
@@ -138,7 +138,44 @@ test("точность крупно, компас, калибровка шага
   assert.equal(stepFromWalk(10, 50), null, "мало пройдено");
   assert.equal(stepFromWalk(100, 50), null, "200 см — так не шагают, ошибка GPS");
   const csv = trackCSV([{ t: 0, mode: "ИНС", lat: 1, lon: 2, acc: 15.2, steps: 40, hdg: 45.4, spread: 12, stepCm: 72, mbps: 1.5 }]);
-  assert.equal(csv.split("\r\n")[1].split(";").length, 10);
+  assert.equal(csv.split("\r\n")[1].split(";").length, 12);
+});
+
+test("GPS-фильтр: по серии, а не по одной точке", () => {
+  const f = createGpsFilter();
+  const at = (t, dLat, acc) => f({ t: t * 1000, lat: A.lat + dLat, lon: A.lon, acc });
+  at(0, 0, 8);
+  assert.equal(at(1, 0, 60).good, true, "одна плохая точка — режим не меняется");
+  assert.equal(at(2, 0, 8).good, true);
+  // одиночный выброс на 500 м — игнорируется
+  const jump = at(3, 0.0045, 10);
+  assert.ok(distance(jump.pos, A) < 20, "выброс не сдвинул место");
+  assert.ok(distance(at(4, 0.00001, 8).pos, A) < 20);
+  // 3 плохие подряд — GPS потерян
+  at(5, 0, 70); at(6, 0, 70);
+  assert.equal(at(7, 0, 70).changed, "lost");
+  // одна хорошая точка — ещё не вернулся
+  assert.equal(at(8, 0.0003, 10).good, false);
+  // вторая согласованная — вернулся, место = их среднее
+  const back = at(9, 0.00032, 10);
+  assert.equal(back.changed, "back");
+  assert.ok(Math.abs(distance(A, back.pos) - 34.5) < 3);
+  assert.equal(insError(10, 100, true), 25, "плохой компас — погрешность растёт быстрее");
+  assert.equal(insError(10, 100, false), 15);
+});
+
+test("места: медиана, стабильность, один пик не наверху", () => {
+  const P = places([
+    { ...A, mbps: 40, ok: true, time: 1, acc: 5 }, // одиночный пик
+    { lat: A.lat + 0.001, lon: A.lon, mbps: 30, ok: true, time: 2, acc: 5, bytes: 100 },
+    { lat: A.lat + 0.001, lon: A.lon, mbps: 31, ok: true, time: 3, acc: 5, bytes: 100 },
+    { lat: A.lat + 0.001, lon: A.lon, mbps: 90, ok: true, time: 4, acc: 5, bytes: 100 }, // скачок
+  ]);
+  assert.equal(P[0].speed, 31, "медиана, а не среднее с пиком 90");
+  assert.equal(P[0].count, 3);
+  assert.equal(P[0].bytes, 300);
+  assert.match(P[0].stability, /разброс большой: 3 замера/, "скачок 90 среди 30–31 честно отмечен");
+  assert.equal(P[1].stability, "1 замер — повторите");
 });
 
 test("подсказки по высоте", () => {
