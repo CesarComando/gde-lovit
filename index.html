@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Где ловит</title>
+  <meta name="theme-color" content="#0f172a" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="top">
+    <h1>📶 Где ловит</h1>
+    <span id="net" class="muted"></span>
+  </header>
+
+  <main>
+    <section class="card now">
+      <div id="nowSpeed" class="big">—</div>
+      <div id="nowText" class="muted">Нажмите «Замерить» там, где стоите</div>
+      <input id="label" type="text" maxlength="40" placeholder="Метка места (необязательно): крыльцо, кухня у окна…" />
+      <button id="go" class="primary">Замерить</button>
+      <label class="row"><input id="auto" type="checkbox" /> Обход: замер каждые 30 секунд, пока экран включён</label>
+    </section>
+
+    <section class="card">
+      <h2>Лучшее место</h2>
+      <div id="best" class="muted">Пока нет замеров с местоположением.</div>
+    </section>
+
+    <section class="card">
+      <div class="head">
+        <h2>Места</h2>
+        <button id="showMap" class="ghost">Карта</button>
+      </div>
+      <div id="map" class="hidden"></div>
+      <ol id="places" class="list"></ol>
+    </section>
+
+    <section class="card">
+      <div class="head">
+        <h2>Все замеры</h2>
+        <span id="used" class="muted"></span>
+      </div>
+      <ul id="log" class="list small"></ul>
+      <div class="row">
+        <button id="csv" class="ghost">Скачать таблицу</button>
+        <button id="clear" class="ghost danger">Удалить все</button>
+      </div>
+      <label class="row muted"><input id="eco" type="checkbox" /> Экономный режим (меньше трафика, замер грубее)</label>
+    </section>
+
+    <p class="muted foot">Замеры хранятся только в этом телефоне. Скорость меряется загрузкой с speed.cloudflare.com. Внутри дома GPS ошибается на 10–30 м — пишите метку места.</p>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
