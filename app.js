@@ -1,5 +1,5 @@
 // Окно «детектора»: прибор, скан, компас к лучшему месту, звук. Расчёты — в core.js.
-import { altHint, altTrend, bearing, confidence, createStepDetector, distance, insError, moveBy, netClass, median, offset, plausible, route, exactBits, fmt, gaugePos, grade, hint, mbps, places, side, speedParts, toCSV } from "./core.js";
+import { altHint, altTrend, bearing, confidence, createStepDetector, distance, fixStatus, headingSpread, insError, moveBy, netClass, stepFromWalk, trackCSV, median, offset, plausible, route, exactBits, fmt, gaugePos, grade, hint, mbps, places, side, speedParts, toCSV } from "./core.js";
 
 // Предохранитель: ответ засчитываем, только если он пришёл от сервера замера, а не от страницы входа Wi-Fi и т.п.
 let portal = false;
@@ -13,7 +13,7 @@ const $ = (id) => document.getElementById(id);
 
 // ---------- Хранилище (только в этом телефоне) ----------
 function load() {
-  const empty = { measures: [], usedBytes: 0, eco: false, sound: true, ins: true, stepCm: 70 };
+  const empty = { measures: [], usedBytes: 0, eco: false, sound: true, ins: true, stepCm: 70, track: [] };
   try { return { ...empty, ...JSON.parse(localStorage.getItem(KEY)) }; } catch { return empty; }
 }
 let S = load();
@@ -177,9 +177,10 @@ function showGen(speed, ping) {
   const c = netClass(speed, ping);
   const el = $("gen");
   el.textContent = c ? "≈" + c : "";
+  $("gennote").textContent = c ? `≈${c} — оценка по скорости и пингу, а не настоящий тип сети` : "";
   el.className = "gen" + (c === "2G" ? " g2" : c === "3G" ? " g3" : "");
 }
-function tag(speed, ping) { const c = netClass(speed, ping); return c ? `<span class="tag">≈${c}</span>` : ""; }
+function tag(speed, ping) { const c = netClass(speed, ping); return c ? `<span class="tag" title="Оценка по скорости и пингу, не настоящий тип сети">≈${c}</span>` : ""; }
 // Через что идёт интернет: Wi-Fi или мобильная сеть (Android Chrome сообщает, iPhone — нет).
 function linkType() {
   const t = navigator.connection?.type;
@@ -224,6 +225,7 @@ async function searchLoop() {
       if (raw.ok) recent.push(raw.mbps); else recent.length = 0;
       if (recent.length > 3) recent.shift();
       const r = raw.ok ? { ...raw, mbps: median(recent) } : raw; // середина из последних 3 — без случайных скачков
+      lastMbps = r.ok ? r.mbps : 0;
       const m = { time: Date.now(), ...r, lat: here?.lat ?? null, lon: here?.lon ?? null, acc: hereAcc, alt: hereAlt, ins: insMode || undefined, net: netInfo(), label: $("label").value.trim().slice(0, 40) };
       showNow(m, true);
       geigerRate(r.ok ? gaugePos(r.mbps) : 0);
@@ -382,7 +384,7 @@ function startCompass() {
     let h = null;
     if (typeof e.webkitCompassHeading === "number") h = e.webkitCompassHeading;
     else if (e.absolute && e.alpha != null) h = 360 - e.alpha;
-    if (h != null) { heading = h; updateArrow(); }
+    if (h != null) onHeading(h);
   };
   try {
     if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
@@ -445,6 +447,8 @@ const GOOD_GPS = 25; // м
 function setInsLed() { $("ledIns").className = "led " + (insMode ? "warn" : S.ins !== false ? "on" : ""); }
 function onGps(p) {
   const acc = p.coords.accuracy;
+  lastFixAt = Date.now();
+  autoCalibrate(p, acc);
   hereAlt = p.coords.altitude ?? hereAlt;
   if (acc <= GOOD_GPS || !here) {
     here = { lat: p.coords.latitude, lon: p.coords.longitude };
@@ -456,7 +460,7 @@ function onGps(p) {
     here = { lat: p.coords.latitude, lon: p.coords.longitude }; hereAcc = acc;
   }
   $("ledGps").className = "led " + (acc > 30 ? "warn" : "on");
-  setInsLed(); render();
+  setInsLed(); render(); updFix();
 }
 // GPS молчит 15 с — тоже переходим на шаги.
 setInterval(() => {
@@ -474,7 +478,7 @@ function onMotion(e) {
     here = moveBy(here, m, heading);
     insMeters += m;
     hereAcc = insError(lastGpsAcc, insMeters);
-    render();
+    render(); updFix();
   }
 }
 function startMotion() {
@@ -487,11 +491,118 @@ function startMotion() {
   } catch { /* датчика нет */ }
 }
 
+// ---------- Точность крупно, компас, калибровка шага, журнал прогулки ----------
+let lastFixAt = null, lastMbps = null, hdgBuf = [], spread = 0, compassBad = false, cal = null, calBase = null, calTimer = null;
+function onHeading(h) {
+  heading = h;
+  const now = Date.now();
+  hdgBuf.push({ t: now, h });
+  while (hdgBuf.length && now - hdgBuf[0].t > 2500) hdgBuf.shift();
+  spread = headingSpread(hdgBuf.map((x) => x.h));
+  const bad = spread > 20;
+  if (bad !== compassBad) { compassBad = bad; updFix(); }
+  $("compassInfo").textContent = `Курс ${Math.round(h)}° · разброс ±${spread}° — ${bad ? "⚠ НЕСТАБИЛЕН: направление по шагам будет неточным" : "стабилен"}`;
+  updateArrow();
+}
+function updFix() {
+  const el = $("fix");
+  const age = lastFixAt ? (Date.now() - lastFixAt) / 1000 : null;
+  el.textContent = fixStatus({ ins: insMode, acc: here ? hereAcc : null, ageSec: age, compassBad: compassBad && (insMode || S.ins !== false) });
+  el.className = "fix" + (!here || (!insMode && age > 20) ? " bad" : insMode || compassBad ? " ins" : "");
+}
+setInterval(updFix, 1000);
+
+// Автокалибровка: пока GPS хороший (±15 м) и мы не в ИНС, копим путь по GPS и шаги; каждые 30 м уточняем длину шага.
+function autoCalibrate(p, acc) {
+  if (acc > 15 || insMode || !motionOn) { cal = null; return; }
+  const pos = { lat: p.coords.latitude, lon: p.coords.longitude };
+  if (!cal) { cal = { last: pos, m: 0, steps: insSteps }; return; }
+  const d = distance(cal.last, pos);
+  if (d >= 3) { cal.m += d; cal.last = pos; } // меньше 3 м — дрожание GPS, не шаги
+  if (cal.m >= 30) {
+    const cm = stepFromWalk(cal.m, insSteps - cal.steps);
+    if (cm && !S.stepManual) {
+      S.stepCm = S.stepAuto ? Math.round(S.stepCm * 0.7 + cm * 0.3) : cm;
+      S.stepAuto = true; save(); updStepInfo();
+    }
+    cal = { last: pos, m: 0, steps: insSteps };
+  }
+}
+function updStepInfo() {
+  $("stepcm").value = S.stepCm || 70;
+  $("stepinfo").textContent = S.stepManual ? "Задано вручную." : S.stepAuto ? "Подобрано автоматически по GPS ✓" : "Пока стандартные 70 см — подберутся сами на первой прогулке с хорошим GPS.";
+}
+$("calStart").onclick = () => {
+  startMotion(); startCompass();
+  calBase = insSteps; $("calSteps").textContent = "0"; $("calM").value = "";
+  $("calBox").classList.remove("hidden");
+  clearInterval(calTimer); calTimer = setInterval(() => { $("calSteps").textContent = insSteps - calBase; }, 300);
+  toast("Идите обычным шагом, потом впишите, сколько метров прошли");
+};
+$("calCancel").onclick = () => { clearInterval(calTimer); $("calBox").classList.add("hidden"); };
+$("calSave").onclick = () => {
+  const steps = insSteps - calBase, m = Number(String($("calM").value).replace(",", "."));
+  const cm = stepFromWalk(m, steps);
+  if (!cm) { toast(steps < 20 ? "Нужно хотя бы 20 шагов" : "Странный результат — проверьте метры"); return; }
+  S.stepCm = cm; S.stepManual = true; S.stepAuto = false; save(); updStepInfo();
+  clearInterval(calTimer); $("calBox").classList.add("hidden");
+  toast(`Длина шага: ${cm} см (${steps} шагов на ${m} м)`);
+};
+
+// Журнал прогулки: каждые 5 с при ПОИСКЕ или ИНС.
+setInterval(() => {
+  if (!(searching || insMode)) return;
+  S.track = S.track || [];
+  S.track.push({ t: Date.now(), mode: insMode ? "ИНС" : here ? "GPS" : "нет", lat: here?.lat, lon: here?.lon, acc: hereAcc, steps: insSteps, hdg: heading, spread, stepCm: S.stepCm, mbps: lastMbps });
+  if (S.track.length > 5000) S.track.splice(0, S.track.length - 5000);
+  save(); updTrackInfo();
+}, 5000);
+function updTrackInfo() { const n = (S.track || []).length; $("trackInfo").textContent = n ? `Записей: ${n} (~${Math.round((n * 5) / 60)} мин)` : "Пока пусто."; }
+$("trackCsv").onclick = () => {
+  if (!(S.track || []).length) { toast("Журнал прогулки пуст — включите ПОИСК или ИНС и пройдитесь"); return; }
+  const blob = new Blob(["\ufeff" + trackCSV(S.track)], { type: "text/csv;charset=utf-8" });
+  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: `gde-lovit-progulka-${new Date().toISOString().slice(0, 16).replace(":", "-")}.csv` });
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$("trackClear").onclick = () => { if (confirm("Очистить журнал прогулки?")) { S.track = []; save(); updTrackInfo(); } };
+
+// ---------- Первый запуск ----------
+const INTRO = [
+  { t: "РАЗРЕШЕНИЯ", p: "Прибору нужны местоположение (GPS) и датчики движения с компасом — для локатора и счёта шагов. Нажмите РАЗРЕШИТЬ и подтвердите в окнах телефона. Замеры остаются только в этом телефоне.", b: "РАЗРЕШИТЬ" },
+  { t: "КАК ДЕРЖАТЬ", p: "Держите телефон перед собой, верхом по ходу движения — так компас и шаги считаются правильно. Экран не гасите: с погашенным экраном браузер останавливает поиск. Для экономии убавьте яркость и включите ЛЕС 🔋.", b: "ПОНЯТНО" },
+  { t: "ПРОБНЫЙ МАРШРУТ", p: "Включим ПОИСК и ИНС. Пройдите метров 50 по прямой, где хороший GPS, — длина шага подстроится сама. После прогулки в ⚙ Настройки скачайте журнал прогулки и пришлите, если что-то пошло не так.", b: "НАЧАТЬ" },
+];
+let introI = 0;
+function showIntro(i) {
+  introI = i;
+  $("introStep").textContent = `ШАГ ${i + 1} ИЗ ${INTRO.length}`;
+  $("introTitle").textContent = INTRO[i].t;
+  $("introText").textContent = INTRO[i].p;
+  $("introNext").textContent = INTRO[i].b;
+  $("intro").classList.remove("hidden");
+}
+function closeIntro() { $("intro").classList.add("hidden"); S.introDone = true; save(); }
+$("introSkip").onclick = closeIntro;
+$("introAgain").onclick = () => showIntro(0);
+$("introNext").onclick = () => {
+  if (introI === 0) {
+    audio()?.resume?.(); startCompass(); startMotion();
+    navigator.geolocation?.getCurrentPosition(() => {}, () => toast("Без доступа к месту локатор работать не будет"), { enableHighAccuracy: true, timeout: 15000 });
+  }
+  if (introI === INTRO.length - 1) {
+    closeIntro();
+    S.ins = true; $("ins").checked = true; save();
+    if (!searching) { $("search").checked = true; setSearch(true); }
+    return;
+  }
+  showIntro(introI + 1);
+};
+
 // ---------- Кнопки ----------
 $("go").onclick = () => { audio()?.resume?.(); startCompass(); startMotion(); measure(); };
 $("search").onchange = (e) => { audio()?.resume?.(); startCompass(); startMotion(); setSearch(e.target.checked); };
 $("ins").onchange = (e) => { S.ins = e.target.checked; save(); startCompass(); startMotion(); if (!S.ins && insMode) { insMode = false; setInsLed(); } toast(S.ins ? "ИНС включена: если GPS ослабнет, поведу по шагам. Держите телефон перед собой" : "ИНС выключена"); };
-$("stepcm").onchange = (e) => { const v = Math.round(Number(e.target.value)); if (v >= 40 && v <= 120) { S.stepCm = v; save(); } else { e.target.value = S.stepCm; toast("Длина шага: от 40 до 120 см"); } };
+$("stepcm").onchange = (e) => { const v = Math.round(Number(e.target.value)); if (v >= 40 && v <= 120) { S.stepCm = v; S.stepManual = true; S.stepAuto = false; save(); updStepInfo(); } else { e.target.value = S.stepCm; toast("Длина шага: от 40 до 120 см"); } };
 $("ins").checked = S.ins !== false;
 $("stepcm").value = S.stepCm || 70;
 // Экран снова включили — браузер снимает запрет сна, просим заново.
@@ -521,7 +632,7 @@ $("csv").onclick = () => {
 
 // Пробный режим для проверки на ПК без GPS: ?demoGeo=широта,долгота[,курс]
 const demoGeo = new URLSearchParams(location.search).get("demoGeo");
-if (demoGeo) { const [la, lo, hd] = demoGeo.split(",").map(Number); here = { lat: la, lon: lo }; hereAcc = 5; if (Number.isFinite(hd)) heading = hd; }
+if (demoGeo) { const [la, lo, hd] = demoGeo.split(",").map(Number); here = { lat: la, lon: lo }; hereAcc = 5; lastFixAt = Date.now(); setInterval(() => { lastFixAt = Date.now(); }, 1000); if (Number.isFinite(hd)) heading = hd; }
 // Текущее место — для цели и стрелки (обновляется при движении).
 else if (navigator.geolocation) {
   navigator.geolocation.watchPosition(
@@ -538,6 +649,8 @@ $("val").textContent = "--.-";
 const last = S.measures.at(-1);
 if (last?.ok) { setGauge(last.mbps); showGen(last.mbps, last.ping); $("word").textContent = grade(last.mbps).word.toUpperCase() + " (ПРОШЛЫЙ)"; $("ping").textContent = last.ping; }
 render();
+updStepInfo(); updTrackInfo(); updFix();
+if (!S.introDone) showIntro(0);
 if (S.search) { $("search").checked = true; setSearch(true); }
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});

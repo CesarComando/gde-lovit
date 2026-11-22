@@ -182,6 +182,45 @@ export function createStepDetector({ threshold = 1.1, minGap = 280 } = {}) {
   };
 }
 
+/**
+ * Насколько «гуляет» компас: наибольшее отклонение (в градусах) от среднего направления.
+ * Средний угол считаем через синусы/косинусы — чтобы 359° и 1° были рядом, а не через весь круг.
+ */
+export function headingSpread(degs) {
+  if (degs.length < 2) return 0;
+  const s = degs.reduce((a, d) => a + Math.sin(rad(d)), 0), c = degs.reduce((a, d) => a + Math.cos(rad(d)), 0);
+  const mean = (Math.atan2(s, c) * 180) / Math.PI;
+  return Math.round(Math.max(...degs.map((d) => Math.abs(((d - mean + 540) % 360) - 180))));
+}
+
+/** Длина шага по пройденному: метры по GPS / число шагов. null, если данных мало или результат странный. */
+export function stepFromWalk(meters, steps) {
+  if (!(steps >= 20) || !(meters >= 15)) return null;
+  const cm = Math.round((meters / steps) * 100);
+  return cm >= 40 && cm <= 120 ? cm : null;
+}
+
+/** Строка точности места крупно: режим и погрешность. */
+export function fixStatus({ ins, acc, ageSec, compassBad }) {
+  let t;
+  if (acc == null) t = "НЕТ МЕСТА · разрешите геолокацию";
+  else if (ins) t = `ИНС · ±${Math.round(acc)} м`;
+  else if (ageSec != null && ageSec > 20) t = `GPS нет · позиция устаревает ${Math.round(ageSec)} с`;
+  else t = `GPS · ±${Math.round(acc)} м`;
+  return compassBad ? t + " · ⚠ компас нестабилен" : t;
+}
+
+/** Журнал прогулки для разбора ошибок: время, режим, место, точность, шаги, курс и разброс компаса. */
+export function trackCSV(track) {
+  const head = "Время;Режим;Широта;Долгота;Точность м;Шагов всего;Курс °;Разброс компаса °;Длина шага см;Мбит/с";
+  const rows = track.map((r) => [
+    new Date(r.t).toLocaleTimeString("ru-RU"), r.mode, r.lat?.toFixed(6) ?? "", r.lon?.toFixed(6) ?? "",
+    r.acc != null ? Math.round(r.acc) : "", r.steps ?? "", r.hdg != null ? Math.round(r.hdg) : "", r.spread ?? "", r.stepCm ?? "",
+    r.mbps != null ? fmt(r.mbps) : "",
+  ].join(";"));
+  return [head, ...rows].join("\r\n");
+}
+
 /** Погрешность места при счёте по шагам: ошибка последнего GPS + ~5% пройденного. */
 export function insError(lastGpsAcc, metersSinceFix) {
   return Math.round((lastGpsAcc ?? 10) + metersSinceFix * 0.05);

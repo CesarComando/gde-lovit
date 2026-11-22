@@ -36,8 +36,10 @@
       </svg>
       <div class="readout"><span id="val">--.-</span><span class="unit" id="unit">Мбит/с</span><span class="gen" id="gen" title="Класс связи по скорости и пингу (оценка)"></span></div>
       <div class="sub"><span id="word">ОЖИДАНИЕ</span> · ПИНГ <span id="ping">---</span> мс</div>
+      <div class="gennote" id="gennote"></div>
       <div class="exact" id="exact">ТОЧНО: — бит/с</div>
       <div class="bar" id="bar"></div>
+      <div class="fix" id="fix">НЕТ МЕСТА</div>
       <div class="status" id="status">Нажмите СКАН там, где стоите</div>
     </section>
 
@@ -74,11 +76,45 @@
     <section class="panel">
       <div class="phead"><div class="ptitle">ЖУРНАЛ</div><span id="used" class="dim"></span></div>
       <ul id="log" class="list small"></ul>
-      <label class="steplen">ДЛИНА ШАГА <input id="stepcm" type="number" min="40" max="120" step="1" inputmode="numeric" /> см · для ИНС</label>
       <div class="row"><button id="csv" class="mini">ТАБЛИЦА CSV</button><button id="clear" class="mini danger">СТЕРЕТЬ ВСЁ</button></div>
     </section>
 
+    <details class="panel settings" id="settings">
+      <summary class="ptitle">⚙ НАСТРОЙКИ И ПРОВЕРКА</summary>
+      <div class="set">
+        <h4>ДЛИНА ШАГА (для ИНС)</h4>
+        <div class="row"><input id="stepcm" type="number" min="40" max="120" step="1" inputmode="numeric" /> см</div>
+        <p class="dim" id="stepinfo"></p>
+        <p class="dim">Подбирается сама, пока GPS хороший: прибор сравнивает пройденные метры с числом шагов. Можно отмерить вручную: нажмите кнопку, пройдите известное расстояние (например, 20 шагов от столба до столба) и впишите метры.</p>
+        <div class="row"><button id="calStart" class="mini">ОТМЕРИТЬ ШАГ</button></div>
+        <div id="calBox" class="calbox hidden">
+          <div>ШАГОВ: <b id="calSteps">0</b></div>
+          <div class="row"><input id="calM" type="number" min="5" max="500" step="0.5" inputmode="decimal" placeholder="метров" /><button id="calSave" class="mini">СОХРАНИТЬ</button><button id="calCancel" class="mini">ОТМЕНА</button></div>
+        </div>
+
+        <h4>КОМПАС</h4>
+        <p id="compassInfo" class="dim">Нет данных — нажмите СКАН или включите ПОИСК</p>
+        <p class="dim">Если «гуляет»: уберите телефон от металла и магнитов (чехол с магнитом, машина), проведите телефоном восьмёрку в воздухе.</p>
+
+        <h4>ЖУРНАЛ ПРОГУЛКИ</h4>
+        <p class="dim">Пока включены ПОИСК или ИНС, каждые 5 с записывается: время, режим GPS/ИНС, место, точность, число шагов, курс и разброс компаса. После проверки скачайте и пришлите — по нему видно, где ошибся расчёт.</p>
+        <div class="row"><button id="trackCsv" class="mini">СКАЧАТЬ ЖУРНАЛ</button><button id="trackClear" class="mini danger">ОЧИСТИТЬ</button></div>
+        <p class="dim" id="trackInfo"></p>
+
+        <div class="row"><button id="introAgain" class="mini">ПЕРВЫЙ ЗАПУСК ЕЩЁ РАЗ</button></div>
+      </div>
+    </details>
+
     <p class="foot">Замеры хранятся только в этом телефоне. Скорость меряется загрузкой с speed.cloudflare.com. В доме GPS ошибается на 10–30 м — пишите метку.</p>
+  </div>
+
+  <div id="intro" class="intro hidden" role="dialog" aria-modal="true">
+    <div class="introbox">
+      <div class="ptitle" id="introStep">ШАГ 1 ИЗ 3</div>
+      <h2 id="introTitle"></h2>
+      <p id="introText"></p>
+      <div class="row"><button id="introSkip" class="mini">ПРОПУСТИТЬ</button><button id="introNext" class="mini go2">ДАЛЕЕ</button></div>
+    </div>
   </div>
 
   <div id="toast" class="toast hidden"></div>

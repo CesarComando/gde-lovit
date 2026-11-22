@@ -1,7 +1,7 @@
 // Проверки «сердца». Запуск: node --test tests/  (без интернета и без телефона)
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { altHint, altTrend, bearing, confidence, createStepDetector, distance, insError, moveBy, exactBits, fmt, gaugePos, grade, hint, mbps, median, netClass, offset, places, plausible, route, side, speedParts, toCSV } from "../core.js";
+import { altHint, altTrend, bearing, confidence, createStepDetector, distance, fixStatus, headingSpread, insError, moveBy, stepFromWalk, trackCSV, exactBits, fmt, gaugePos, grade, hint, mbps, median, netClass, offset, places, plausible, route, side, speedParts, toCSV } from "../core.js";
 
 const A = { lat: 55.8849, lon: 26.5009 };
 
@@ -123,6 +123,22 @@ test("класс связи по скорости: 2G/3G/4G/5G", () => {
   assert.equal(netClass(120, 20), "5G");
   assert.equal(netClass(120, 60), "4G"); // быстро, но пинг большой — хороший 4G
   assert.equal(netClass(0, null), "");
+});
+
+test("точность крупно, компас, калибровка шага, журнал прогулки", () => {
+  assert.equal(fixStatus({ ins: false, acc: 8.4, ageSec: 2 }), "GPS · ±8 м");
+  assert.equal(fixStatus({ ins: true, acc: 16 }), "ИНС · ±16 м");
+  assert.equal(fixStatus({ ins: false, acc: 8, ageSec: 40 }), "GPS нет · позиция устаревает 40 с");
+  assert.equal(fixStatus({ acc: null }), "НЕТ МЕСТА · разрешите геолокацию");
+  assert.match(fixStatus({ ins: true, acc: 20, compassBad: true }), /компас нестабилен/);
+  assert.equal(headingSpread([358, 2, 0, 1]), 2, "через север — рядом, а не 180°");
+  assert.ok(headingSpread([10, 60, 350]) >= 30);
+  assert.equal(headingSpread([90]), 0);
+  assert.equal(stepFromWalk(36, 50), 72);
+  assert.equal(stepFromWalk(10, 50), null, "мало пройдено");
+  assert.equal(stepFromWalk(100, 50), null, "200 см — так не шагают, ошибка GPS");
+  const csv = trackCSV([{ t: 0, mode: "ИНС", lat: 1, lon: 2, acc: 15.2, steps: 40, hdg: 45.4, spread: 12, stepCm: 72, mbps: 1.5 }]);
+  assert.equal(csv.split("\r\n")[1].split(";").length, 10);
 });
 
 test("подсказки по высоте", () => {
