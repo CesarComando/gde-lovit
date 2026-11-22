@@ -1,7 +1,7 @@
 // Проверки «сердца». Запуск: node --test tests/  (без интернета и без телефона)
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { altHint, altTrend, bearing, distance, exactBits, fmt, gaugePos, grade, hint, mbps, places, side, speedParts, toCSV } from "../core.js";
+import { altHint, altTrend, bearing, confidence, distance, exactBits, fmt, gaugePos, grade, hint, mbps, median, offset, places, plausible, route, side, speedParts, toCSV } from "../core.js";
 
 const A = { lat: 55.8849, lon: 26.5009 };
 
@@ -53,6 +53,46 @@ test("близкие замеры — одно место, лучшие свер
   assert.equal(p[1].label, "крыльцо");
   assert.match(hint(A, p[0]), /^111 м на север$/);
   assert.equal(hint(A, p[1]), "Вы на лучшем месте");
+});
+
+test("предохранители: невозможные числа, точность, сглаживание, плохой GPS", () => {
+  assert.equal(plausible({ ok: true, mbps: 5000, bytes: 1, ms: 1000 }), false);
+  assert.equal(plausible({ ok: true, mbps: 50, bytes: 1_000_000, ms: 20 }), false);
+  assert.equal(plausible({ ok: true, mbps: NaN }), false);
+  assert.equal(plausible({ ok: true, mbps: 12, bytes: 9_000_000, ms: 6000, ping: 30 }), true);
+  assert.equal(plausible({ ok: false }), true);
+  assert.equal(confidence(5_000_000, 6000).word, "высокая");
+  assert.equal(confidence(72_000, 12000).word, "средняя");
+  assert.equal(confidence(4_000, 2500).word, "низкая");
+  assert.equal(confidence(900_000, 500).word, "низкая");
+  assert.equal(median([1, 100, 2]), 2);
+  assert.equal(median([1, 3]), 2);
+  assert.equal(median([]), null);
+  const P = places([
+    { ...A, mbps: 50, ok: true, time: 1, acc: 300 }, // GPS ±300 м — не годится
+    { ...A, mbps: 9000, ok: true, time: 2, acc: 5, bytes: 1, ms: 1000 }, // невозможно
+    { ...A, mbps: 2, ok: true, time: 3, acc: 8 },
+  ]);
+  assert.equal(P.length, 1);
+  assert.equal(P[0].speed, 2);
+});
+
+test("локатор: путь по пройденным точкам к лучшему месту", () => {
+  // Человек прошёл тропу на север по 30 м; лучшая связь в конце (150 м). Сейчас стоит в начале.
+  const step = 0.00027; // ~30 м
+  const trail = [0, 1, 2, 3, 4, 5].map((i) => ({ lat: A.lat + i * step, lon: A.lon, speed: i === 5 ? 10 : 0.1 * (i + 1) }));
+  const P = [...trail].sort((a, b) => b.speed - a.speed);
+  const r = route(A, P);
+  assert.equal(r.length, 5, "ведёт через 4 промежуточные точки к цели");
+  assert.equal(r.at(-1).speed, 10);
+  assert.ok(distance(A, r[0]) < 40, "первая точка — ближайшая");
+  // Если точки далеко друг от друга — сразу к цели.
+  const far = [{ lat: A.lat + 0.01, lon: A.lon, speed: 5 }, { lat: A.lat + 0.0001, lon: A.lon + 0.005, speed: 1 }];
+  assert.equal(route(A, far).length, 1);
+  // Уже на месте.
+  assert.equal(route(trail[5], P).length, 1);
+  const o = offset(A, { lat: A.lat + 0.001, lon: A.lon });
+  assert.ok(Math.abs(o.x) < 0.5 && o.y < -100);
 });
 
 test("подсказки по высоте", () => {

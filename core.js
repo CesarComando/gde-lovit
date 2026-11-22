@@ -31,6 +31,37 @@ export function mbps(bytes, ms) {
   return (bytes * 8) / (ms / 1000) / 1e6;
 }
 
+// ---------- Предохранители: не выдавать «абы какие» числа ----------
+
+/** Насколько можно верить замеру: зависит от того, сколько данных и как долго мерили. */
+export function confidence(bytes, ms) {
+  if (!bytes || !ms) return { level: 0, word: "нет данных" };
+  if (ms < 800) return { level: 1, word: "низкая" }; // слишком короткий замер
+  if (bytes >= 500_000 && ms >= 1500) return { level: 3, word: "высокая" };
+  if (bytes >= 30_000 || ms >= 5000) return { level: 2, word: "средняя" };
+  return { level: 1, word: "низкая" };
+}
+
+/** Отсеять физически невозможные замеры (сбой браузера, часов, сети). */
+export function plausible(m) {
+  if (!m.ok) return true;
+  if (!(m.mbps >= 0) || m.mbps > 3000) return false; // больше 3 Гбит/с телефон не принимает
+  if (m.bytes > 0 && m.ms != null && m.ms < 100) return false; // «скачал» за миг — ошибка таймера
+  if (m.ping != null && (m.ping < 1 || m.ping > 60000)) return false;
+  return true;
+}
+
+/** Середина ряда — устойчива к одиночным скачкам. */
+export function median(xs) {
+  const a = xs.filter((x) => x != null && Number.isFinite(x)).sort((p, q) => p - q);
+  if (!a.length) return null;
+  const k = Math.floor(a.length / 2);
+  return a.length % 2 ? a[k] : (a[k - 1] + a[k]) / 2;
+}
+
+/** Точка с плохим GPS (погрешность больше 50 м) не годится для поиска лучшего места. */
+export const GPS_MAX_ERR = 50;
+
 /** Оценка словами, цветом и что можно делать при такой связи. */
 export function grade(speed) {
   if (speed >= 10) return { word: "отлично", level: 4, can: "видео, звонки по видео" };
@@ -75,7 +106,7 @@ export function fmt(speed) {
  * Скорость места — средняя по его замерам. Сортировка: лучшие сверху.
  */
 export function places(measures, radius = 15) {
-  const withGeo = measures.filter((m) => m.lat != null && m.lon != null && m.ok);
+  const withGeo = measures.filter((m) => m.lat != null && m.lon != null && m.ok && plausible(m) && (m.acc == null || m.acc <= GPS_MAX_ERR));
   const groups = [];
   for (const m of withGeo) {
     const g = groups.find((g) => distance(g.center, m) <= radius);
@@ -111,6 +142,49 @@ export function hint(here, best) {
   if (d < 8) return "Вы на лучшем месте";
   const m = d < 1000 ? `${Math.round(d)} м` : `${fmt(d / 1000)} км`;
   return `${m} на ${side(bearing(here, best))}`;
+}
+
+/**
+ * ЛОКАТОР: путь от точки к точке к лучшему месту.
+ * Идём по уже пройденным местам (они рядом друг с другом), чтобы вести тем путём, где человек уже был.
+ * Соседи — места не дальше maxHop метров. Ищем самый короткий путь (Дейкстра) от ближайшего к человеку места до лучшего.
+ * Если пройденного пути нет — одна точка: сразу лучшее место.
+ * Возвращает массив мест (без текущего положения), последнее — лучшее.
+ */
+export function route(here, P, maxHop = 60) {
+  if (!here || !P.length) return [];
+  const best = P[0];
+  if (distance(here, best) < 8) return [best];
+  const n = P.length;
+  let start = 0;
+  for (let i = 1; i < n; i++) if (distance(here, P[i]) < distance(here, P[start])) start = i;
+  if (start === 0) return [best];
+  const dist = Array(n).fill(Infinity), prev = Array(n).fill(-1), done = Array(n).fill(false);
+  dist[start] = 0;
+  for (;;) {
+    let u = -1;
+    for (let i = 0; i < n; i++) if (!done[i] && dist[i] < Infinity && (u < 0 || dist[i] < dist[u])) u = i;
+    if (u < 0 || u === 0) break;
+    done[u] = true;
+    for (let v = 0; v < n; v++) {
+      if (done[v]) continue;
+      const d = distance(P[u], P[v]);
+      if (d <= maxHop && dist[u] + d < dist[v]) { dist[v] = dist[u] + d; prev[v] = u; }
+    }
+  }
+  if (dist[0] === Infinity) return [best]; // пути по точкам нет — прямо к цели
+  const path = [];
+  for (let v = 0; v !== -1; v = prev[v]) path.unshift(P[v]);
+  // Первую точку пропускаем, если она совсем рядом — человек уже на ней.
+  if (path.length > 1 && distance(here, path[0]) < 8) path.shift();
+  return path;
+}
+
+/** Положение точки на экране радара относительно человека: x вправо (восток), y вниз (юг), в метрах. */
+export function offset(here, p) {
+  const d = distance(here, p);
+  const b = (bearing(here, p) * Math.PI) / 180;
+  return { x: d * Math.sin(b), y: -d * Math.cos(b), d };
 }
 
 /**

@@ -1,5 +1,9 @@
 // Окно «детектора»: прибор, скан, компас к лучшему месту, звук. Расчёты — в core.js.
-import { altHint, altTrend, bearing, distance, exactBits, fmt, gaugePos, grade, hint, mbps, places, side, speedParts, toCSV } from "./core.js";
+import { altHint, altTrend, bearing, confidence, distance, median, offset, plausible, route, exactBits, fmt, gaugePos, grade, hint, mbps, places, side, speedParts, toCSV } from "./core.js";
+
+// Предохранитель: ответ засчитываем, только если он пришёл от сервера замера, а не от страницы входа Wi-Fi и т.п.
+let portal = false;
+function genuine(r) { const ok = r.ok && (r.headers.get("content-type") || "").includes("octet-stream"); if (!ok) portal = true; return ok; }
 
 const sp = (v) => { const p = speedParts(v); return `${p.value} ${p.unit}`; };
 
@@ -87,6 +91,7 @@ async function ping() {
     try {
       const r = await fetch(TEST_URL + "0&r=" + Math.random(), { cache: "no-store", signal: AbortSignal.timeout(12000) });
       await r.arrayBuffer();
+      if (!genuine(r)) throw new Error("не тот сервер");
       times.push(performance.now() - t);
     } catch { if (!times.length) break; }
   }
@@ -104,11 +109,13 @@ async function download(pingMs, opt = {}) {
   let got = 0;
   try {
     const r = await fetch(TEST_URL + maxBytes + "&r=" + Math.random(), { cache: "no-store", signal: ctrl.signal });
+    if (!genuine(r)) { clearTimeout(timer); return { bytes: 0, ms: performance.now() - t0 }; }
     const reader = r.body.getReader();
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       got += value.length;
+      if (got > maxBytes + 65536) { got = 0; break; } // пришло больше, чем просили, — это не наш замер
       const el = performance.now() - t0;
       if (el > 300) setGauge(mbps(got, el), true);
       if (!opt.quiet) $("status").textContent = `СКАНИРУЮ… ${Math.round(got / 1024)} КБ`;
@@ -119,9 +126,22 @@ async function download(pingMs, opt = {}) {
 }
 
 let busy = false;
+function badMeasure() {
+  $("word").textContent = "ОШИБКА ЗАМЕРА";
+  $("exact").textContent = "Число получилось невозможным — оно не сохранено";
+  $("status").textContent = "Нажмите СКАН ещё раз";
+  setGauge(0);
+  finishScan();
+}
+function finishScan() {
+  if (!searching) { geigerStop(); document.querySelector(".gaugebox").classList.remove("scanning"); }
+  $("go").classList.remove("busy");
+  busy = false;
+}
 async function measure() {
   if (busy) return;
   busy = true;
+  portal = false;
   $("go").classList.add("busy");
   document.querySelector(".gaugebox").classList.add("scanning");
   $("word").textContent = "СКАН";
@@ -142,6 +162,7 @@ async function measure() {
   };
   if (geo) here = { lat: geo.lat, lon: geo.lon };
   S.usedBytes += d.bytes;
+  if (!plausible(m)) { badMeasure(); return; }
   S.measures.push(m);
   save();
   showNow(m);
@@ -160,6 +181,7 @@ function netInfo() {
 // Каждые ~3 с: пинг + короткая загрузка (до 150 КБ, в ЭКО до 30 КБ). Стрелка и треск живые.
 // Когда связь появляется после «нет связи» — тревожный сигнал. Точки на карту — каждые 10 м или 20 с.
 let searching = false, prevOk = null, lastRec = null;
+const recent = [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function probe() {
@@ -168,7 +190,7 @@ async function probe() {
   try {
     const r = await fetch(TEST_URL + "0&r=" + Math.random(), { cache: "no-store", signal: AbortSignal.timeout(8000) });
     await r.arrayBuffer();
-    p = Math.round(performance.now() - t);
+    if (genuine(r)) p = Math.round(performance.now() - t);
   } catch { /* нет связи */ }
   if (p == null) return { ok: false, mbps: 0, ping: null, bytes: 0, ms: 0 };
   const d = await download(p, { maxBytes: S.eco || S.forest ? 30_000 : 150_000, maxMs: p > 800 ? 6000 : 2500, quiet: true });
@@ -181,9 +203,14 @@ async function searchLoop() {
   while (searching) {
     const t0 = performance.now();
     if (!busy) {
-      const r = await probe();
+      portal = false;
+      const raw = await probe();
       if (!searching) break;
-      S.usedBytes += r.bytes;
+      S.usedBytes += raw.bytes;
+      if (!plausible(raw)) { await sleep(1000); continue; }
+      if (raw.ok) recent.push(raw.mbps); else recent.length = 0;
+      if (recent.length > 3) recent.shift();
+      const r = raw.ok ? { ...raw, mbps: median(recent) } : raw; // середина из последних 3 — без случайных скачков
       const m = { time: Date.now(), ...r, lat: here?.lat ?? null, lon: here?.lon ?? null, acc: hereAcc, alt: hereAlt, net: netInfo(), label: $("label").value.trim().slice(0, 40) };
       showNow(m, true);
       geigerRate(r.ok ? gaugePos(r.mbps) : 0);
@@ -227,7 +254,7 @@ function showNow(m, quiet = false) {
     $("word").textContent = "НЕТ СВЯЗИ";
     $("ping").textContent = "---";
     $("exact").textContent = quiet ? "ТОЧНО: 0 бит/с · сервер не ответил" : "ТОЧНО: 0 бит/с · сервер не ответил за 12 с";
-    $("status").textContent = "Попробуйте выше или на открытом месте. Экстренно: 112 — работает через любого оператора";
+    $("status").textContent = portal ? "Ответил не сервер замера — возможно, Wi-Fi просит вход (откройте браузер)" : "Попробуйте выше или на открытом месте. Экстренно: 112 — работает через любого оператора";
     $("ledNet").className = "led off";
     if (!quiet) resultBeep(1);
     return;
@@ -238,7 +265,10 @@ function showNow(m, quiet = false) {
   $("ping").textContent = m.ping;
   $("ledNet").className = "led " + (g.level >= 3 ? "on" : "warn");
   $("ledGps").className = "led " + (m.lat == null ? "off" : m.acc > 30 ? "warn" : "on");
-  $("exact").textContent = `ТОЧНО: ${exactBits(m.mbps)} бит/с · ${String(m.bytes).replace(/\B(?=(\d{3})+(?!\d))/g, " ")} Б за ${(m.ms / 1000).toFixed(2).replace(".", ",")} с`;
+  const c = confidence(m.bytes, m.ms);
+  m.conf = c.level;
+  if (c.level <= 1) $("val").textContent = "≈" + $("val").textContent;
+  $("exact").textContent = `ТОЧНО: ${exactBits(m.mbps)} бит/с · ${String(m.bytes).replace(/\B(?=(\d{3})+(?!\d))/g, " ")} Б за ${(m.ms / 1000).toFixed(2).replace(".", ",")} с · ДОСТОВЕРНОСТЬ: ${c.word.toUpperCase()}`;
   $("status").textContent = `Можно: ${g.can}. ` + (m.lat == null ? "Место не определено — разрешите геолокацию" : `Записано, место ±${Math.round(m.acc)} м`);
   if (!quiet) resultBeep(g.level);
 }
@@ -248,24 +278,29 @@ let here = null, hereAcc = null, hereAlt = null, heading = null;
 function render() {
   const P = places(S.measures);
   const b = P[0];
-  if (b) {
-    const g = grade(b.speed);
-    $("tinfo").innerHTML = `<span class="dot lv${g.level}" style="display:inline-block"></span> <b>${sp(b.speed)}</b> · ${esc(b.label || "без метки")}`;
-    if (here) {
-      const d = distance(here, b);
-      $("tdist").textContent = d < 8 ? "ВЫ ЗДЕСЬ" : d < 1000 ? `${Math.round(d)} м` : `${fmt(d / 1000)} км`;
-      const ah = altHint(hereAlt, b.alt);
-      $("tnote").textContent = (d < 8 ? "Лучшее место — прямо тут" : `на ${side(bearing(here, b))}${heading == null ? " · стрелка относительно севера" : " · стрелка по компасу"}`) + (ah && d >= 8 ? ` · ${ah}` : "");
-    } else {
-      $("tdist").textContent = "—";
-      $("tnote").textContent = "Нажмите СКАН, чтобы узнать, куда идти";
-    }
+  path = here ? route(here, P) : [];
+  const next = path[0];
+  if (b && here && next) {
+    const d = distance(here, next);
+    const total = path.reduce((s, p, i) => s + distance(i ? path[i - 1] : here, p), 0);
+    const g = grade(next.speed);
+    const last = next === b;
+    $("tdist").textContent = d < 8 ? (last ? "ВЫ В ЗОНЕ" : "ТОЧКА ВЗЯТА") : (d < 1000 ? `${Math.round(d)} м` : `${fmt(d / 1000)} км`) + ` → ${side(bearing(here, next)).toUpperCase()}`;
+    $("tinfo").innerHTML = `<span class="dot lv${g.level}" style="display:inline-block"></span> ${last ? "ЦЕЛЬ" : `ТОЧКА 1 из ${path.length}`} · <b>${sp(next.speed)}</b>${next.label ? " · " + esc(next.label) : ""}`;
+    const ah = altHint(hereAlt, next.alt);
+    $("tnote").textContent = (heading == null ? "Радар повёрнут севером вверх" : "Радар поворачивается вместе с телефоном") + (ah && d >= 8 ? ` · ${ah}` : "");
+    $("tgoal").textContent = last ? "" : `ЦЕЛЬ: ${sp(b.speed)}${b.label ? " · " + b.label : ""} · путь ${Math.round(total)} м по пройденным точкам`;
+    // Дошли до точки — короткий сигнал (один раз на точку).
+    const key = `${next.lat.toFixed(5)},${next.lon.toFixed(5)}`;
+    if (lastNext && lastNext !== key) { if (S.sound) click(1600, 0.08, 0.3); try { navigator.vibrate?.(80); } catch { /* нет */ } }
+    lastNext = key;
   } else {
     $("tdist").textContent = "—";
-    $("tinfo").textContent = "Нет замеров с местоположением";
-    $("tnote").textContent = "";
+    $("tinfo").textContent = b ? `Лучшее место: ${sp(b.speed)}${b.label ? " · " + b.label : ""}` : "Нет замеров с местоположением";
+    $("tnote").textContent = b ? "Нажмите СКАН или включите ПОИСК — локатор поведёт" : "Сделайте замеры в разных местах — локатор построит путь";
+    $("tgoal").textContent = "";
   }
-  updateArrow();
+  drawRadar(P);
   const trend = altTrend(S.measures);
   $("trend").textContent = trend ? "⛰ " + trend : "";
 
@@ -286,14 +321,42 @@ function render() {
   if (mapObj) drawMap(P);
 }
 
-function updateArrow() {
-  const P = places(S.measures);
-  const a = $("arrow");
-  if (!here || !P[0] || distance(here, P[0]) < 8) { a.classList.add("none"); a.textContent = P[0] && here ? "◉" : "▲"; a.style.transform = ""; return; }
-  a.classList.remove("none"); a.textContent = "▲";
-  const deg = bearing(here, P[0]) - (heading ?? 0);
-  a.style.transform = `rotate(${deg}deg)`;
+// ---------- Локатор: радар, вы в центре ----------
+let path = [], lastNext = null, lastP = [];
+const LV = { 4: "#2dff7a", 3: "#9be22d", 2: "#ffb020", 1: "#ff3b30" };
+function niceScale(m) { for (const s of [25, 50, 100, 200, 300, 500, 1000, 2000, 5000, 10000, 50000]) if (m <= s) return s; return 100000; }
+function drawRadar(P = lastP) {
+  lastP = P;
+  const svg = $("radar");
+  const rot = heading == null ? 0 : -heading; // телефон смотрит вверх
+  let maxD = 25;
+  for (const q of path) maxD = Math.max(maxD, offset(here, q).d);
+  const scale = niceScale(maxD * 1.1);
+  const k = 100 / scale;
+  $("scale").textContent = here ? `КРУГ = ${scale >= 1000 ? fmt(scale / 1000) + " км" : scale + " м"}` : "";
+  const xy = (o) => { const f = Math.min(o.d * k, 104) / (o.d || 1); return [(o.x * f).toFixed(1), (o.y * f).toFixed(1)]; };
+  let h = `<defs><linearGradient id="beam" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dff7a" stop-opacity=".22"/><stop offset="1" stop-color="#2dff7a" stop-opacity="0"/></linearGradient></defs>`;
+  h += `<circle r="104" fill="#030805" stroke="#2a5a36" stroke-width="2"/>`;
+  for (const r of [35, 70]) h += `<circle class="ring" r="${r}"/>`;
+  h += `<g class="beamg"><path class="beam" d="M0 0 L104 0 A104 104 0 0 0 90 -52 Z"/></g>`;
+  h += `<g transform="rotate(${rot})">`;
+  h += `<line class="axis" x1="-104" y1="0" x2="104" y2="0"/><line class="axis" x1="0" y1="-104" x2="0" y2="104"/>`;
+  h += `<text class="nn" x="0" y="-92" text-anchor="middle" transform="rotate(${-rot} 0 -96)">С</text>`;
+  if (here) {
+    for (const p of P) { const [x, y] = xy(offset(here, p)); h += `<circle cx="${x}" cy="${y}" r="4.5" fill="${LV[grade(p.speed).level]}"/>`; }
+    for (const m of S.measures) if (!m.ok && m.lat != null) { const [x, y] = xy(offset(here, m)); h += `<text x="${x}" y="${Number(y) + 3}" fill="#ff3b30" font-size="9" text-anchor="middle">×</text>`; }
+    if (path.length) {
+      const line = [["0", "0"], ...path.map((q) => xy(offset(here, q)))];
+      h += `<polyline class="path" points="${line.map((a) => a.join(",")).join(" ")}"/>`;
+      const [nx, ny] = line[1]; h += `<circle class="next" cx="${nx}" cy="${ny}" r="9"/>`;
+      const [gx, gy] = line.at(-1); h += `<circle class="goal" cx="${gx}" cy="${gy}" r="8"/><circle class="goal" cx="${gx}" cy="${gy}" r="3"/>`;
+    }
+  }
+  h += `</g>`;
+  h += here ? `<path class="me" d="M0 -9 L6 6 L0 3 L-6 6 Z"/>` : `<text class="rl" x="0" y="4" text-anchor="middle">НЕТ GPS</text>`;
+  svg.innerHTML = h;
 }
+function updateArrow() { drawRadar(); }
 
 // Компас телефона: стрелка показывает реальное направление к цели.
 let compassOn = false;
@@ -386,8 +449,11 @@ $("csv").onclick = () => {
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
 
+// Пробный режим для проверки на ПК без GPS: ?demoGeo=широта,долгота[,курс]
+const demoGeo = new URLSearchParams(location.search).get("demoGeo");
+if (demoGeo) { const [la, lo, hd] = demoGeo.split(",").map(Number); here = { lat: la, lon: lo }; hereAcc = 5; if (Number.isFinite(hd)) heading = hd; }
 // Текущее место — для цели и стрелки (обновляется при движении).
-if (navigator.geolocation) {
+else if (navigator.geolocation) {
   navigator.geolocation.watchPosition(
     (p) => { here = { lat: p.coords.latitude, lon: p.coords.longitude }; hereAcc = p.coords.accuracy; hereAlt = p.coords.altitude; $("ledGps").className = "led " + (p.coords.accuracy > 30 ? "warn" : "on"); render(); },
     () => { $("ledGps").className = "led off"; },

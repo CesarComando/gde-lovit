@@ -96,9 +96,27 @@ input[type="text"]:focus { border-color: var(--glow-dim); box-shadow: 0 0 0 2px 
 .compass .north { position: absolute; top: 4px; left: 0; right: 0; text-align: center; font-size: 11px; font-weight: 800; color: var(--red); }
 .arrow { position: absolute; inset: 0; display: grid; place-items: center; font-size: 44px; color: var(--glow); text-shadow: 0 0 12px var(--glow); transition: transform .3s ease-out; }
 .arrow.none { color: var(--dim); text-shadow: none; }
-.tdist { font-size: 30px; font-weight: 800; color: var(--glow); text-shadow: 0 0 10px rgba(45,255,122,.5); line-height: 1.1; }
+.tdist { font-size: 24px; font-weight: 800; color: var(--glow); text-shadow: 0 0 10px rgba(45,255,122,.5); line-height: 1.1; }
 .tinfo { font-size: 13px; margin-top: 4px; }
 .tnote { font-size: 11px; color: var(--dim); margin-top: 4px; }
+
+/* Локатор */
+.radar { display: block; width: 100%; max-width: 330px; margin: 8px auto 10px; }
+.radar .ring { fill: none; stroke: var(--edge2); stroke-width: 1; }
+.radar .axis { stroke: var(--edge); stroke-width: 1; }
+.radar .rl { fill: var(--dim); font: 8px var(--mono); }
+.radar .nn { fill: var(--red); font: 800 11px var(--mono); }
+.radar .path { fill: none; stroke: var(--glow); stroke-width: 2; stroke-dasharray: 5 4; filter: drop-shadow(0 0 3px var(--glow)); }
+.radar .next { fill: none; stroke: var(--glow); stroke-width: 2; }
+body:not(.forest) .radar .next { animation: ping 1.4s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes ping { 0% { opacity: 1; transform: scale(.6); } 100% { opacity: 0; transform: scale(1.8); } }
+.radar .goal { fill: none; stroke: var(--amber); stroke-width: 2; }
+.radar .me { fill: var(--glow); filter: drop-shadow(0 0 5px var(--glow)); }
+.radar .beam { fill: url(#beam); }
+body:not(.forest) .radar .beamg { animation: spin 3s linear infinite; transform-origin: 0 0; }
+.tdist, .tinfo, .tnote, .tgoal { text-align: center; }
+.tgoal { font-size: 11px; color: var(--amber); margin-top: 6px; }
+.tgoal:empty { display: none; }
 
 /* Списки */
 .list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }

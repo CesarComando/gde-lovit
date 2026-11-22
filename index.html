@@ -53,15 +53,12 @@
 
     <!-- Цель: куда идти -->
     <section class="panel target">
-      <div class="ptitle">ЦЕЛЬ · ЛУЧШЕЕ МЕСТО</div>
-      <div class="tgrid">
-        <div class="compass" id="compass"><div class="north">С</div><div class="arrow" id="arrow">▲</div></div>
-        <div>
-          <div class="tdist" id="tdist">—</div>
-          <div class="tinfo" id="tinfo">Нет замеров с местоположением</div>
-          <div class="tnote" id="tnote"></div>
-        </div>
-      </div>
+      <div class="phead"><div class="ptitle">ЛОКАТОР · ПУТЬ К ЗОНЕ</div><span class="dim" id="scale"></span></div>
+      <svg id="radar" class="radar" viewBox="-115 -115 230 230" aria-label="Радар: вы в центре, точки — замеры, линия — путь к хорошей зоне"></svg>
+      <div class="tdist" id="tdist">—</div>
+      <div class="tinfo" id="tinfo">Нет замеров с местоположением</div>
+      <div class="tnote" id="tnote"></div>
+      <div class="tgoal" id="tgoal"></div>
       <div class="trend" id="trend"></div>
     </section>
 
