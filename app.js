@@ -94,10 +94,10 @@ async function ping() {
 }
 
 // Загрузка: при слабой связи (долгий пинг) даём больше времени, чтобы поймать хоть какие-то биты.
-async function download(pingMs) {
+async function download(pingMs, opt = {}) {
   const weak = pingMs > 800;
-  const maxBytes = S.eco ? 1_000_000 : 5_000_000;
-  const maxMs = weak ? 12000 : S.eco ? 4000 : 6000;
+  const maxBytes = opt.maxBytes ?? (S.eco ? 1_000_000 : 5_000_000);
+  const maxMs = opt.maxMs ?? (weak ? 12000 : S.eco ? 4000 : 6000);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), maxMs);
   const t0 = performance.now();
@@ -111,7 +111,7 @@ async function download(pingMs) {
       got += value.length;
       const el = performance.now() - t0;
       if (el > 300) setGauge(mbps(got, el), true);
-      $("status").textContent = `СКАНИРУЮ… ${Math.round(got / 1024)} КБ`;
+      if (!opt.quiet) $("status").textContent = `СКАНИРУЮ… ${Math.round(got / 1024)} КБ`;
     }
   } catch { /* остановили по времени — считаем то, что успело скачаться */ }
   clearTimeout(timer);
@@ -127,13 +127,13 @@ async function measure() {
   $("word").textContent = "СКАН";
   $("status").textContent = "ИЩУ МЕСТО И СВЯЗЬ…";
   setGauge(0, true);
-  geigerStart();
+  if (!searching) geigerStart();
   const geoP = where();
   const p = await ping();
   $("ping").textContent = p ?? "---";
   const d = p == null ? { bytes: 0, ms: 0 } : await download(p);
   const geo = await geoP;
-  geigerStop();
+  if (!searching) geigerStop();
   const speed = d.bytes > 0 ? mbps(d.bytes, d.ms) : 0;
   const m = {
     time: Date.now(), mbps: speed, ping: p, ok: p != null, bytes: d.bytes, ms: Math.round(d.ms),
@@ -146,7 +146,7 @@ async function measure() {
   save();
   showNow(m);
   render();
-  document.querySelector(".gaugebox").classList.remove("scanning");
+  if (!searching) document.querySelector(".gaugebox").classList.remove("scanning");
   $("go").classList.remove("busy");
   busy = false;
 }
@@ -156,14 +156,80 @@ function netInfo() {
   return c ? [c.type, c.effectiveType].filter(Boolean).join(" ") : "";
 }
 
-function showNow(m) {
+// ---------- ПОИСК: непрерывно, лёгкими замерами ----------
+// Каждые ~3 с: пинг + короткая загрузка (до 150 КБ, в ЭКО до 30 КБ). Стрелка и треск живые.
+// Когда связь появляется после «нет связи» — тревожный сигнал. Точки на карту — каждые 10 м или 20 с.
+let searching = false, prevOk = null, lastRec = null;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function probe() {
+  const t = performance.now();
+  let p = null;
+  try {
+    const r = await fetch(TEST_URL + "0&r=" + Math.random(), { cache: "no-store", signal: AbortSignal.timeout(8000) });
+    await r.arrayBuffer();
+    p = Math.round(performance.now() - t);
+  } catch { /* нет связи */ }
+  if (p == null) return { ok: false, mbps: 0, ping: null, bytes: 0, ms: 0 };
+  const d = await download(p, { maxBytes: S.eco ? 30_000 : 150_000, maxMs: p > 800 ? 6000 : 2500, quiet: true });
+  return { ok: true, ping: p, bytes: d.bytes, ms: Math.round(d.ms), mbps: d.bytes ? mbps(d.bytes, d.ms) : 0 };
+}
+
+async function searchLoop() {
+  document.querySelector(".gaugebox").classList.add("scanning");
+  geigerStart();
+  while (searching) {
+    const t0 = performance.now();
+    if (!busy) {
+      const r = await probe();
+      if (!searching) break;
+      S.usedBytes += r.bytes;
+      const m = { time: Date.now(), ...r, lat: here?.lat ?? null, lon: here?.lon ?? null, acc: hereAcc, net: netInfo(), label: $("label").value.trim().slice(0, 40) };
+      showNow(m, true);
+      geigerRate(r.ok ? gaugePos(r.mbps) : 0);
+      if (prevOk === false && r.ok) alarm();
+      prevOk = r.ok;
+      const far = !lastRec || (m.lat != null && lastRec.lat != null ? distance(lastRec, m) >= 10 : false) || Date.now() - lastRec.time >= 20000;
+      if (far) { S.measures.push(m); lastRec = m; render(); }
+      save();
+      $("status").textContent = `ПОИСК… ${r.ok ? grade(r.mbps).can : "связи нет — идите выше или на открытое место"}`;
+    }
+    await sleep(Math.max(300, 3000 - (performance.now() - t0)));
+  }
+  geigerStop();
+  document.querySelector(".gaugebox").classList.remove("scanning");
+}
+
+function alarm() {
+  toast("📶 СВЯЗЬ ПОЯВИЛАСЬ! Остановитесь здесь");
+  if (S.sound) for (let i = 0; i < 6; i++) setTimeout(() => click(i % 2 ? 1400 : 900, 0.18, 0.4), i * 220);
+  try { navigator.vibrate?.([300, 120, 300, 120, 600]); } catch { /* нет вибрации */ }
+}
+
+let wake = null;
+async function setSearch(on) {
+  searching = on;
+  S.search = on; save();
+  if (on) {
+    prevOk = null; lastRec = null;
+    searchLoop();
+    try { wake = await navigator.wakeLock?.request("screen"); } catch { /* не поддерживается */ }
+    toast("ПОИСК включён: идите — детектор ищет связь сам");
+  } else {
+    try { await wake?.release(); } catch { /* ок */ }
+    wake = null;
+  }
+}
+
+function showNow(m, quiet = false) {
   if (!m.ok) {
     setGauge(0);
     $("word").textContent = "НЕТ СВЯЗИ";
-    $("exact").textContent = "ТОЧНО: 0 бит/с · сервер не ответил за 12 с";
+    $("ping").textContent = "---";
+    $("exact").textContent = quiet ? "ТОЧНО: 0 бит/с · сервер не ответил" : "ТОЧНО: 0 бит/с · сервер не ответил за 12 с";
     $("status").textContent = "Попробуйте выше или на открытом месте. Экстренно: 112 — работает через любого оператора";
     $("ledNet").className = "led off";
-    resultBeep(1);
+    if (!quiet) resultBeep(1);
     return;
   }
   const g = grade(m.mbps);
@@ -174,11 +240,11 @@ function showNow(m) {
   $("ledGps").className = "led " + (m.lat == null ? "off" : m.acc > 30 ? "warn" : "on");
   $("exact").textContent = `ТОЧНО: ${exactBits(m.mbps)} бит/с · ${String(m.bytes).replace(/\B(?=(\d{3})+(?!\d))/g, " ")} Б за ${(m.ms / 1000).toFixed(2).replace(".", ",")} с`;
   $("status").textContent = `Можно: ${g.can}. ` + (m.lat == null ? "Место не определено — разрешите геолокацию" : `Записано, место ±${Math.round(m.acc)} м`);
-  resultBeep(g.level);
+  if (!quiet) resultBeep(g.level);
 }
 
 // ---------- Цель и списки ----------
-let here = null, heading = null;
+let here = null, hereAcc = null, heading = null;
 function render() {
   const P = places(S.measures);
   const b = P[0];
@@ -289,24 +355,11 @@ function drawMap(P) {
   setTimeout(() => mapObj.invalidateSize(), 50);
 }
 
-// ---------- Обход: скан каждые 30 с ----------
-let autoTimer = null, wake = null;
-async function setAuto(on) {
-  clearInterval(autoTimer);
-  if (on) {
-    measure();
-    autoTimer = setInterval(measure, 30000);
-    try { wake = await navigator.wakeLock?.request("screen"); } catch { /* не поддерживается */ }
-    toast("ОБХОД: ходите по местам, детектор сканирует сам");
-  } else {
-    try { await wake?.release(); } catch { /* ок */ }
-    wake = null;
-  }
-}
-
 // ---------- Кнопки ----------
 $("go").onclick = () => { audio()?.resume?.(); startCompass(); measure(); };
-$("auto").onchange = (e) => { audio()?.resume?.(); startCompass(); setAuto(e.target.checked); };
+$("search").onchange = (e) => { audio()?.resume?.(); startCompass(); setSearch(e.target.checked); };
+// Экран снова включили — браузер снимает запрет сна, просим заново.
+document.addEventListener("visibilitychange", async () => { if (searching && document.visibilityState === "visible") { try { wake = await navigator.wakeLock?.request("screen"); } catch { /* ок */ } } });
 $("sound").onchange = (e) => { S.sound = e.target.checked; save(); if (S.sound) { audio()?.resume?.(); click(); } };
 $("eco").onchange = (e) => { S.eco = e.target.checked; save(); };
 $("showMap").onclick = () => openMap().catch(() => toast("Карта не загрузилась — нет интернета?"));
@@ -328,7 +381,7 @@ $("csv").onclick = () => {
 // Текущее место — для цели и стрелки (обновляется при движении).
 if (navigator.geolocation) {
   navigator.geolocation.watchPosition(
-    (p) => { here = { lat: p.coords.latitude, lon: p.coords.longitude }; $("ledGps").className = "led " + (p.coords.accuracy > 30 ? "warn" : "on"); render(); },
+    (p) => { here = { lat: p.coords.latitude, lon: p.coords.longitude }; hereAcc = p.coords.accuracy; $("ledGps").className = "led " + (p.coords.accuracy > 30 ? "warn" : "on"); render(); },
     () => { $("ledGps").className = "led off"; },
     { enableHighAccuracy: true, maximumAge: 10000 },
   );
@@ -339,5 +392,6 @@ $("val").textContent = "--.-";
 const last = S.measures.at(-1);
 if (last?.ok) { setGauge(last.mbps); $("word").textContent = grade(last.mbps).word.toUpperCase() + " (ПРОШЛЫЙ)"; $("ping").textContent = last.ping; }
 render();
+if (S.search) { $("search").checked = true; setSearch(true); }
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
