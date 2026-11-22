@@ -39,6 +39,12 @@ export function grade(speed) {
   return { word: "очень плохо", level: 1 };
 }
 
+/** Положение стрелки прибора 0..1 по логарифмической шкале 0,1–100 Мбит/с. */
+export function gaugePos(speed) {
+  if (!speed || speed <= 0.1) return 0;
+  return Math.min(1, Math.log10(speed / 0.1) / 3);
+}
+
 /** Красиво: 0.56 → «0,56», 12.3 → «12». */
 export function fmt(speed) {
   const n = speed >= 10 ? Math.round(speed) : Math.round(speed * 100) / 100;

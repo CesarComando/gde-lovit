@@ -1,5 +1,5 @@
-// Окно приложения: кнопки, замер, список. Расчёты — в core.js.
-import { fmt, grade, hint, mbps, places, toCSV } from "./core.js";
+// Окно «детектора»: прибор, скан, компас к лучшему месту, звук. Расчёты — в core.js.
+import { bearing, distance, fmt, gaugePos, grade, hint, mbps, places, side, toCSV } from "./core.js";
 
 const KEY = "gdeLovit.v1";
 const TEST_URL = "https://speed.cloudflare.com/__down?bytes=";
@@ -7,11 +7,60 @@ const $ = (id) => document.getElementById(id);
 
 // ---------- Хранилище (только в этом телефоне) ----------
 function load() {
-  try { return JSON.parse(localStorage.getItem(KEY)) || { measures: [], usedBytes: 0, eco: false }; }
-  catch { return { measures: [], usedBytes: 0, eco: false }; }
+  const empty = { measures: [], usedBytes: 0, eco: false, sound: true };
+  try { return { ...empty, ...JSON.parse(localStorage.getItem(KEY)) }; } catch { return empty; }
 }
 let S = load();
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch { toast("Не удалось сохранить в памяти телефона"); } }
+
+// ---------- Прибор ----------
+const TICKS = [0.1, 0.3, 1, 3, 10, 30, 100];
+const LABELS = { 0.1: "0", 1: "1", 10: "10", 100: "100" };
+(function drawTicks() {
+  let html = "";
+  for (const v of TICKS) {
+    const a = Math.PI * (1 - gaugePos(v === 0.1 ? 0 : v));
+    const major = v in LABELS;
+    const [r1, r2] = major ? [100, 116] : [106, 116];
+    const x1 = 150 + r1 * Math.cos(a), y1 = 150 - r1 * Math.sin(a), x2 = 150 + r2 * Math.cos(a), y2 = 150 - r2 * Math.sin(a);
+    html += `<line class="tick${major ? "" : " minor"}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
+    if (major) html += `<text x="${150 + 86 * Math.cos(a)}" y="${150 - 86 * Math.sin(a) + 4}" text-anchor="middle">${LABELS[v]}</text>`;
+  }
+  $("ticks").innerHTML = html;
+  $("bar").innerHTML = "<i></i>".repeat(12);
+})();
+
+function setGauge(speed, live = false) {
+  const t = gaugePos(speed);
+  $("needle").style.transform = `rotate(${-90 + 180 * t}deg)`;
+  const n = speed > 0 ? Math.max(1, Math.round(t * 12)) : 0;
+  [...$("bar").children].forEach((el, i) => { el.className = i < n ? (i < 3 ? "r" : i < 6 ? "a" : i < 9 ? "l" : "g") : ""; });
+  $("val").textContent = speed > 0 || !live ? fmt(speed) : "0";
+  if (S.sound && live) geigerRate(t);
+}
+
+// ---------- Звук: треск как у счётчика Гейгера ----------
+let ac = null, geigerTimer = null, rate = 0;
+function audio() { if (!ac) { try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch { ac = null; } } return ac; }
+function click(freq = 1800, len = 0.012, vol = 0.25) {
+  const a = audio(); if (!a) return;
+  const o = a.createOscillator(), g = a.createGain();
+  o.type = "square"; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, a.currentTime); g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + len);
+  o.connect(g).connect(a.destination); o.start(); o.stop(a.currentTime + len + 0.01);
+}
+function geigerRate(t) { rate = 1 + t * 28; }
+function geigerStart() {
+  if (!S.sound) return;
+  rate = 1;
+  const tick = () => { click(1200 + Math.random() * 1500); geigerTimer = setTimeout(tick, (1000 / rate) * (0.4 + Math.random() * 1.2)); };
+  tick();
+}
+function geigerStop() { clearTimeout(geigerTimer); geigerTimer = null; }
+function resultBeep(level) {
+  if (S.sound) for (let i = 0; i < level; i++) setTimeout(() => click(500 + level * 250, 0.09, 0.3), i * 150);
+  try { navigator.vibrate?.(Array.from({ length: level }, () => [70, 70]).flat()); } catch { /* нет вибрации */ }
+}
 
 // ---------- Замер ----------
 function where() {
@@ -52,36 +101,36 @@ async function download() {
       const { done, value } = await reader.read();
       if (done) break;
       got += value.length;
-      $("nowText").textContent = `Меряю скорость… ${Math.round(got / 1024)} КБ`;
+      const el = performance.now() - t0;
+      if (el > 300) setGauge(mbps(got, el), true);
+      $("status").textContent = `СКАНИРУЮ… ${Math.round(got / 1024)} КБ`;
     }
   } catch { /* остановили по времени — считаем то, что успело скачаться */ }
   clearTimeout(timer);
-  const ms = performance.now() - t0;
-  return { bytes: got, ms };
+  return { bytes: got, ms: performance.now() - t0 };
 }
 
 let busy = false;
 async function measure() {
   if (busy) return;
   busy = true;
-  $("go").disabled = true;
-  $("nowSpeed").textContent = "…";
-  $("nowText").textContent = "Определяю место и связь…";
+  $("go").classList.add("busy");
+  document.querySelector(".gaugebox").classList.add("scanning");
+  $("word").textContent = "СКАН";
+  $("status").textContent = "ИЩУ МЕСТО И СВЯЗЬ…";
+  setGauge(0, true);
+  geigerStart();
   const geoP = where();
   const p = await ping();
+  $("ping").textContent = p ?? "---";
   const d = p == null ? { bytes: 0, ms: 0 } : await download();
   const geo = await geoP;
+  geigerStop();
   const speed = d.bytes > 0 ? mbps(d.bytes, d.ms) : 0;
   const m = {
-    time: Date.now(),
-    mbps: speed,
-    ping: p,
-    ok: p != null,
-    lat: geo?.lat ?? null,
-    lon: geo?.lon ?? null,
-    acc: geo?.acc ?? null,
-    net: netInfo(),
-    label: $("label").value.trim().slice(0, 40),
+    time: Date.now(), mbps: speed, ping: p, ok: p != null,
+    lat: geo?.lat ?? null, lon: geo?.lon ?? null, acc: geo?.acc ?? null,
+    net: netInfo(), label: $("label").value.trim().slice(0, 40),
   };
   if (geo) here = { lat: geo.lat, lon: geo.lon };
   S.usedBytes += d.bytes;
@@ -89,71 +138,115 @@ async function measure() {
   save();
   showNow(m);
   render();
+  document.querySelector(".gaugebox").classList.remove("scanning");
+  $("go").classList.remove("busy");
   busy = false;
-  $("go").disabled = false;
 }
 
 function netInfo() {
   const c = navigator.connection;
-  if (!c) return "";
-  return [c.type, c.effectiveType].filter(Boolean).join(" ");
+  return c ? [c.type, c.effectiveType].filter(Boolean).join(" ") : "";
 }
 
-// ---------- Экран ----------
 function showNow(m) {
   if (!m.ok) {
-    $("nowSpeed").textContent = "нет связи";
-    $("nowText").textContent = "Интернет здесь не отвечает";
+    setGauge(0);
+    $("val").textContent = "0";
+    $("word").textContent = "НЕТ СВЯЗИ";
+    $("status").textContent = "Интернет здесь не отвечает";
+    $("ledNet").className = "led off";
+    resultBeep(1);
     return;
   }
   const g = grade(m.mbps);
-  $("nowSpeed").innerHTML = `${fmt(m.mbps)} <small>Мбит/с</small>`;
-  const geo = m.lat == null ? " · место не определено (разрешите доступ к геолокации)" : ` · точность места ±${Math.round(m.acc)} м`;
-  $("nowText").textContent = `${g.word} · пинг ${m.ping} мс${geo}`;
+  setGauge(m.mbps);
+  $("word").textContent = g.word.toUpperCase();
+  $("ping").textContent = m.ping;
+  $("ledNet").className = "led " + (g.level >= 3 ? "on" : "warn");
+  $("ledGps").className = "led " + (m.lat == null ? "off" : m.acc > 30 ? "warn" : "on");
+  $("status").textContent = m.lat == null ? "Место не определено — разрешите геолокацию" : `ЗАПИСАНО · точность места ±${Math.round(m.acc)} м`;
+  resultBeep(g.level);
 }
 
-let here = null;
+// ---------- Цель и списки ----------
+let here = null, heading = null;
 function render() {
   const P = places(S.measures);
-  // Лучшее место
-  $("best").classList.toggle("muted", !P.length);
-  if (P.length) {
-    const b = P[0];
+  const b = P[0];
+  if (b) {
     const g = grade(b.speed);
-    $("best").innerHTML = `<div><span class="dot lv${g.level}" style="display:inline-block"></span> <b>${fmt(b.speed)} Мбит/с</b> · ${g.word}</div>
-      <div class="muted">${esc(b.label || "без метки")} · замеров: ${b.count} · ${when(b.last)}</div>
-      <div class="go">${here ? esc(hint(here, b)) : "Нажмите «Замерить», чтобы узнать, куда идти"}</div>`;
+    $("tinfo").innerHTML = `<span class="dot lv${g.level}" style="display:inline-block"></span> <b>${fmt(b.speed)} Мбит/с</b> · ${esc(b.label || "без метки")}`;
+    if (here) {
+      const d = distance(here, b);
+      $("tdist").textContent = d < 8 ? "ВЫ ЗДЕСЬ" : d < 1000 ? `${Math.round(d)} м` : `${fmt(d / 1000)} км`;
+      $("tnote").textContent = d < 8 ? "Лучшее место — прямо тут" : `на ${side(bearing(here, b))}${heading == null ? " · стрелка относительно севера" : " · стрелка по компасу"}`;
+    } else {
+      $("tdist").textContent = "—";
+      $("tnote").textContent = "Нажмите СКАН, чтобы узнать, куда идти";
+    }
   } else {
-    $("best").textContent = "Пока нет замеров с местоположением.";
+    $("tdist").textContent = "—";
+    $("tinfo").textContent = "Нет замеров с местоположением";
+    $("tnote").textContent = "";
   }
-  // Места
+  updateArrow();
+
+  const top = P[0]?.speed || 1;
   $("places").innerHTML = P.slice(0, 20).map((p, i) => {
     const g = grade(p.speed);
-    return `<li><span class="dot lv${g.level}"></span><span class="grow"><b>${i + 1}. ${fmt(p.speed)} Мбит/с</b> · ${esc(p.label || "без метки")}<br><span class="muted">${here ? esc(hint(here, p)) + " · " : ""}замеров: ${p.count}</span></span></li>`;
-  }).join("") || `<li class="muted">Здесь появятся места, где вы мерили связь.</li>`;
-  // Все замеры, новые сверху
+    return `<li><span class="dot lv${g.level}"></span><span class="grow"><b>${i + 1}. ${fmt(p.speed)} Мбит/с</b> · ${esc(p.label || "без метки")}<span class="dim">${here ? esc(hint(here, p)) + " · " : ""}замеров: ${p.count}</span><div class="minibar"><i style="width:${Math.max(4, (p.speed / top) * 100)}%"></i></div></span></li>`;
+  }).join("") || `<li class="empty">Здесь появятся места, где вы сканировали</li>`;
+
   $("log").innerHTML = S.measures.map((m, i) => ({ m, i })).reverse().slice(0, 100).map(({ m, i }) => {
     const g = grade(m.mbps);
     const s = m.ok ? `${fmt(m.mbps)} Мбит/с · ${m.ping} мс` : "нет связи";
     return `<li><span class="dot lv${m.ok ? g.level : 1}"></span><span class="grow">${when(m.time)} · <b>${s}</b>${m.label ? " · " + esc(m.label) : ""}${m.lat == null ? " · без места" : ""}</span><button class="x" data-del="${i}" title="Удалить">✕</button></li>`;
-  }).join("") || `<li class="muted">Замеров пока нет.</li>`;
-  $("used").textContent = `трафик на замеры: ${fmt(S.usedBytes / 1e6)} МБ`;
+  }).join("") || `<li class="empty">Замеров пока нет</li>`;
+  $("used").textContent = `ТРАФИК ${fmt(S.usedBytes / 1e6)} МБ`;
   $("eco").checked = !!S.eco;
+  $("sound").checked = !!S.sound;
   if (mapObj) drawMap(P);
+}
+
+function updateArrow() {
+  const P = places(S.measures);
+  const a = $("arrow");
+  if (!here || !P[0] || distance(here, P[0]) < 8) { a.classList.add("none"); a.textContent = P[0] && here ? "◉" : "▲"; a.style.transform = ""; return; }
+  a.classList.remove("none"); a.textContent = "▲";
+  const deg = bearing(here, P[0]) - (heading ?? 0);
+  a.style.transform = `rotate(${deg}deg)`;
+}
+
+// Компас телефона: стрелка показывает реальное направление к цели.
+let compassOn = false;
+function startCompass() {
+  if (compassOn) return;
+  compassOn = true;
+  const onTurn = (e) => {
+    let h = null;
+    if (typeof e.webkitCompassHeading === "number") h = e.webkitCompassHeading;
+    else if (e.absolute && e.alpha != null) h = 360 - e.alpha;
+    if (h != null) { heading = h; updateArrow(); }
+  };
+  try {
+    if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+      DeviceOrientationEvent.requestPermission().then((s) => { if (s === "granted") addEventListener("deviceorientation", onTurn); }).catch(() => {});
+    } else if ("ondeviceorientationabsolute" in window) addEventListener("deviceorientationabsolute", onTurn);
+    else addEventListener("deviceorientation", onTurn);
+  } catch { /* компаса нет */ }
 }
 
 function when(t) {
   const d = new Date(t);
-  const today = new Date().toDateString() === d.toDateString();
   const hm = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-  return today ? `сегодня ${hm}` : `${d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" })} ${hm}`;
+  return new Date().toDateString() === d.toDateString() ? hm : `${d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" })} ${hm}`;
 }
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
 function toast(t) { const el = $("toast"); el.textContent = t; el.classList.remove("hidden"); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add("hidden"), 3000); }
 
 // ---------- Карта (по кнопке: карта тратит трафик) ----------
 let mapObj = null, layer = null;
-const COLORS = { 4: "#16a34a", 3: "#65a30d", 2: "#d97706", 1: "#dc2626" };
+const COLORS = { 4: "#2dff7a", 3: "#9be22d", 2: "#ffb020", 1: "#ff3b30" };
 async function openMap() {
   const box = $("map");
   if (!box.classList.contains("hidden")) { box.classList.add("hidden"); return; }
@@ -175,7 +268,7 @@ function drawMap(P) {
     L.circleMarker([p.lat, p.lon], { radius: 10, color: COLORS[grade(p.speed).level], fillOpacity: 0.8 })
       .bindPopup(`${fmt(p.speed)} Мбит/с${p.label ? " · " + esc(p.label) : ""}`).addTo(layer);
   }
-  if (here) L.circleMarker([here.lat, here.lon], { radius: 6, color: "#2563eb", fillOpacity: 1 }).bindPopup("Вы здесь").addTo(layer);
+  if (here) L.circleMarker([here.lat, here.lon], { radius: 6, color: "#ffffff", fillOpacity: 1 }).bindPopup("Вы здесь").addTo(layer);
   const pts = P.map((p) => [p.lat, p.lon]);
   if (here) pts.push([here.lat, here.lon]);
   if (pts.length) mapObj.fitBounds(pts, { maxZoom: 18, padding: [24, 24] });
@@ -183,7 +276,7 @@ function drawMap(P) {
   setTimeout(() => mapObj.invalidateSize(), 50);
 }
 
-// ---------- Обход: замер каждые 30 с ----------
+// ---------- Обход: скан каждые 30 с ----------
 let autoTimer = null, wake = null;
 async function setAuto(on) {
   clearInterval(autoTimer);
@@ -191,7 +284,7 @@ async function setAuto(on) {
     measure();
     autoTimer = setInterval(measure, 30000);
     try { wake = await navigator.wakeLock?.request("screen"); } catch { /* не поддерживается */ }
-    toast("Обход включён: ходите по местам, телефон мерит сам");
+    toast("ОБХОД: ходите по местам, детектор сканирует сам");
   } else {
     try { await wake?.release(); } catch { /* ок */ }
     wake = null;
@@ -199,19 +292,18 @@ async function setAuto(on) {
 }
 
 // ---------- Кнопки ----------
-$("go").onclick = () => measure();
-$("auto").onchange = (e) => setAuto(e.target.checked);
-$("showMap").onclick = () => openMap().catch(() => toast("Карта не загрузилась — нет интернета?"));
+$("go").onclick = () => { audio()?.resume?.(); startCompass(); measure(); };
+$("auto").onchange = (e) => { audio()?.resume?.(); startCompass(); setAuto(e.target.checked); };
+$("sound").onchange = (e) => { S.sound = e.target.checked; save(); if (S.sound) { audio()?.resume?.(); click(); } };
 $("eco").onchange = (e) => { S.eco = e.target.checked; save(); };
+$("showMap").onclick = () => openMap().catch(() => toast("Карта не загрузилась — нет интернета?"));
 $("log").onclick = (e) => {
   const i = e.target.dataset?.del;
-  if (i == null) return;
-  if (!confirm("Удалить этот замер?")) return;
+  if (i == null || !confirm("Удалить этот замер?")) return;
   S.measures.splice(Number(i), 1); save(); render();
 };
 $("clear").onclick = () => {
-  if (!S.measures.length) return;
-  if (!confirm(`Удалить все ${S.measures.length} замеров? Вернуть будет нельзя.`)) return;
+  if (!S.measures.length || !confirm(`Стереть все ${S.measures.length} замеров? Вернуть будет нельзя.`)) return;
   S.measures = []; S.usedBytes = 0; save(); render();
 };
 $("csv").onclick = () => {
@@ -220,11 +312,19 @@ $("csv").onclick = () => {
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
 
-// Текущее место — для подсказки «куда идти» (обновляется при движении).
+// Текущее место — для цели и стрелки (обновляется при движении).
 if (navigator.geolocation) {
-  navigator.geolocation.watchPosition((p) => { here = { lat: p.coords.latitude, lon: p.coords.longitude }; render(); }, () => {}, { enableHighAccuracy: true, maximumAge: 10000 });
+  navigator.geolocation.watchPosition(
+    (p) => { here = { lat: p.coords.latitude, lon: p.coords.longitude }; $("ledGps").className = "led " + (p.coords.accuracy > 30 ? "warn" : "on"); render(); },
+    () => { $("ledGps").className = "led off"; },
+    { enableHighAccuracy: true, maximumAge: 10000 },
+  );
 }
-$("net").textContent = netInfo();
+$("net").textContent = netInfo().toUpperCase() || "NET";
+setGauge(0);
+$("val").textContent = "--.-";
+const last = S.measures.at(-1);
+if (last?.ok) { setGauge(last.mbps); $("word").textContent = grade(last.mbps).word.toUpperCase() + " (ПРОШЛЫЙ)"; $("ping").textContent = last.ping; }
 render();
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});

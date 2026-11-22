@@ -1,7 +1,7 @@
 // Проверки «сердца». Запуск: node --test tests/  (без интернета и без телефона)
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bearing, distance, fmt, grade, hint, mbps, places, side, toCSV } from "../core.js";
+import { bearing, distance, fmt, gaugePos, grade, hint, mbps, places, side, toCSV } from "../core.js";
 
 const A = { lat: 55.8849, lon: 26.5009 };
 
@@ -21,6 +21,9 @@ test("скорость и оценка", () => {
   assert.equal(grade(0.1).word, "очень плохо");
   assert.equal(fmt(0.564), "0,56");
   assert.equal(fmt(12.4), "12");
+  assert.equal(gaugePos(0), 0);
+  assert.equal(gaugePos(1), 1 / 3);
+  assert.equal(gaugePos(500), 1);
 });
 
 test("близкие замеры — одно место, лучшие сверху, без GPS не считаются", () => {

@@ -4,56 +4,78 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Где ловит</title>
-  <meta name="theme-color" content="#0f172a" />
+  <meta name="theme-color" content="#050b07" />
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icon.svg" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header class="top">
-    <h1>📶 Где ловит</h1>
-    <span id="net" class="muted"></span>
-  </header>
-
-  <main>
-    <section class="card now">
-      <div id="nowSpeed" class="big">—</div>
-      <div id="nowText" class="muted">Нажмите «Замерить» там, где стоите</div>
-      <input id="label" type="text" maxlength="40" placeholder="Метка места (необязательно): крыльцо, кухня у окна…" />
-      <button id="go" class="primary">Замерить</button>
-      <label class="row"><input id="auto" type="checkbox" /> Обход: замер каждые 30 секунд, пока экран включён</label>
-    </section>
-
-    <section class="card">
-      <h2>Лучшее место</h2>
-      <div id="best" class="muted">Пока нет замеров с местоположением.</div>
-    </section>
-
-    <section class="card">
-      <div class="head">
-        <h2>Места</h2>
-        <button id="showMap" class="ghost">Карта</button>
+  <div class="device">
+    <header class="top">
+      <div class="brand">ГДЕ&nbsp;ЛОВИТ <span class="model">ДЕТЕКТОР СВЯЗИ · ДС-1</span></div>
+      <div class="leds">
+        <span class="led" id="ledGps" title="GPS"></span><span class="ledname">GPS</span>
+        <span class="led" id="ledNet" title="Сеть"></span><span class="ledname" id="net">NET</span>
       </div>
+    </header>
+
+    <!-- Прибор -->
+    <section class="panel gaugebox">
+      <div class="sweep" id="sweep"></div>
+      <svg class="gauge" viewBox="0 0 300 170" aria-hidden="true">
+        <defs>
+          <linearGradient id="arc" x1="0" x2="1">
+            <stop offset="0" stop-color="#ff3b30" /><stop offset=".35" stop-color="#ffb020" /><stop offset=".6" stop-color="#9be22d" /><stop offset="1" stop-color="#2dff7a" />
+          </linearGradient>
+        </defs>
+        <path d="M30 150 A120 120 0 0 1 270 150" fill="none" stroke="url(#arc)" stroke-width="10" stroke-linecap="round" opacity=".9" />
+        <g id="ticks"></g>
+        <g id="needle" class="needle"><line x1="150" y1="150" x2="150" y2="44" /><circle cx="150" cy="150" r="9" /></g>
+      </svg>
+      <div class="readout"><span id="val">--.-</span><span class="unit">Мбит/с</span></div>
+      <div class="sub"><span id="word">ОЖИДАНИЕ</span> · ПИНГ <span id="ping">---</span> мс</div>
+      <div class="bar" id="bar"></div>
+      <div class="status" id="status">Нажмите СКАН там, где стоите</div>
+    </section>
+
+    <section class="panel controls">
+      <input id="label" type="text" maxlength="40" placeholder="› метка места: крыльцо, у окна…" />
+      <button id="go" class="scan"><span>СКАН</span></button>
+      <div class="switches">
+        <label class="sw"><input id="auto" type="checkbox" /><span>ОБХОД 30с</span></label>
+        <label class="sw"><input id="sound" type="checkbox" /><span>ЗВУК</span></label>
+        <label class="sw"><input id="eco" type="checkbox" /><span>ЭКО</span></label>
+      </div>
+    </section>
+
+    <!-- Цель: куда идти -->
+    <section class="panel target">
+      <div class="ptitle">ЦЕЛЬ · ЛУЧШЕЕ МЕСТО</div>
+      <div class="tgrid">
+        <div class="compass" id="compass"><div class="north">С</div><div class="arrow" id="arrow">▲</div></div>
+        <div>
+          <div class="tdist" id="tdist">—</div>
+          <div class="tinfo" id="tinfo">Нет замеров с местоположением</div>
+          <div class="tnote" id="tnote"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="phead"><div class="ptitle">МЕСТА</div><button id="showMap" class="mini">КАРТА</button></div>
       <div id="map" class="hidden"></div>
       <ol id="places" class="list"></ol>
     </section>
 
-    <section class="card">
-      <div class="head">
-        <h2>Все замеры</h2>
-        <span id="used" class="muted"></span>
-      </div>
+    <section class="panel">
+      <div class="phead"><div class="ptitle">ЖУРНАЛ</div><span id="used" class="dim"></span></div>
       <ul id="log" class="list small"></ul>
-      <div class="row">
-        <button id="csv" class="ghost">Скачать таблицу</button>
-        <button id="clear" class="ghost danger">Удалить все</button>
-      </div>
-      <label class="row muted"><input id="eco" type="checkbox" /> Экономный режим (меньше трафика, замер грубее)</label>
+      <div class="row"><button id="csv" class="mini">ТАБЛИЦА CSV</button><button id="clear" class="mini danger">СТЕРЕТЬ ВСЁ</button></div>
     </section>
 
-    <p class="muted foot">Замеры хранятся только в этом телефоне. Скорость меряется загрузкой с speed.cloudflare.com. Внутри дома GPS ошибается на 10–30 м — пишите метку места.</p>
-  </main>
+    <p class="foot">Замеры хранятся только в этом телефоне. Скорость меряется загрузкой с speed.cloudflare.com. В доме GPS ошибается на 10–30 м — пишите метку.</p>
+  </div>
 
   <div id="toast" class="toast hidden"></div>
   <script type="module" src="app.js"></script>
