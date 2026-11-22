@@ -1,6 +1,6 @@
 // Работа без интернета: окно приложения хранится в телефоне.
 // При каждой правке файлов увеличивать VERSION.
-const VERSION = "gde-lovit-v2";
+const VERSION = "gde-lovit-v3";
 const FILES = ["./", "index.html", "style.css", "app.js", "core.js", "manifest.json", "icon.svg", "vendor/leaflet.js", "vendor/leaflet.css"];
 
 self.addEventListener("install", (e) => {

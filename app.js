@@ -1,5 +1,7 @@
 // Окно «детектора»: прибор, скан, компас к лучшему месту, звук. Расчёты — в core.js.
-import { bearing, distance, fmt, gaugePos, grade, hint, mbps, places, side, toCSV } from "./core.js";
+import { bearing, distance, exactBits, fmt, gaugePos, grade, hint, mbps, places, side, speedParts, toCSV } from "./core.js";
+
+const sp = (v) => { const p = speedParts(v); return `${p.value} ${p.unit}`; };
 
 const KEY = "gdeLovit.v1";
 const TEST_URL = "https://speed.cloudflare.com/__down?bytes=";
@@ -14,12 +16,12 @@ let S = load();
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch { toast("Не удалось сохранить в памяти телефона"); } }
 
 // ---------- Прибор ----------
-const TICKS = [0.1, 0.3, 1, 3, 10, 30, 100];
-const LABELS = { 0.1: "0", 1: "1", 10: "10", 100: "100" };
+const TICKS = [0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1, 3, 10, 30, 100];
+const LABELS = { 0.001: "1к", 0.01: "10к", 0.1: "100к", 1: "1М", 10: "10М", 100: "100М" };
 (function drawTicks() {
   let html = "";
   for (const v of TICKS) {
-    const a = Math.PI * (1 - gaugePos(v === 0.1 ? 0 : v));
+    const a = Math.PI * (1 - gaugePos(v));
     const major = v in LABELS;
     const [r1, r2] = major ? [100, 116] : [106, 116];
     const x1 = 150 + r1 * Math.cos(a), y1 = 150 - r1 * Math.sin(a), x2 = 150 + r2 * Math.cos(a), y2 = 150 - r2 * Math.sin(a);
@@ -35,7 +37,10 @@ function setGauge(speed, live = false) {
   $("needle").style.transform = `rotate(${-90 + 180 * t}deg)`;
   const n = speed > 0 ? Math.max(1, Math.round(t * 12)) : 0;
   [...$("bar").children].forEach((el, i) => { el.className = i < n ? (i < 3 ? "r" : i < 6 ? "a" : i < 9 ? "l" : "g") : ""; });
-  $("val").textContent = speed > 0 || !live ? fmt(speed) : "0";
+  const p = speedParts(speed);
+  $("val").textContent = p.value;
+  $("unit").textContent = p.unit;
+  $("exact").textContent = `ТОЧНО: ${exactBits(speed)} бит/с`;
   if (S.sound && live) geigerRate(t);
 }
 
@@ -74,22 +79,25 @@ function where() {
   });
 }
 
+// Пинг: при слабой связи ждём до 12 с. Если первая попытка не прошла — связи нет, не мучаем.
 async function ping() {
   const times = [];
   for (let i = 0; i < 3; i++) {
     const t = performance.now();
     try {
-      const r = await fetch(TEST_URL + "0&r=" + Math.random(), { cache: "no-store", signal: AbortSignal.timeout(5000) });
+      const r = await fetch(TEST_URL + "0&r=" + Math.random(), { cache: "no-store", signal: AbortSignal.timeout(12000) });
       await r.arrayBuffer();
       times.push(performance.now() - t);
-    } catch { /* нет связи */ }
+    } catch { if (!times.length) break; }
   }
   return times.length ? Math.round(Math.min(...times)) : null;
 }
 
-async function download() {
+// Загрузка: при слабой связи (долгий пинг) даём больше времени, чтобы поймать хоть какие-то биты.
+async function download(pingMs) {
+  const weak = pingMs > 800;
   const maxBytes = S.eco ? 1_000_000 : 5_000_000;
-  const maxMs = S.eco ? 4000 : 6000;
+  const maxMs = weak ? 12000 : S.eco ? 4000 : 6000;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), maxMs);
   const t0 = performance.now();
@@ -123,12 +131,12 @@ async function measure() {
   const geoP = where();
   const p = await ping();
   $("ping").textContent = p ?? "---";
-  const d = p == null ? { bytes: 0, ms: 0 } : await download();
+  const d = p == null ? { bytes: 0, ms: 0 } : await download(p);
   const geo = await geoP;
   geigerStop();
   const speed = d.bytes > 0 ? mbps(d.bytes, d.ms) : 0;
   const m = {
-    time: Date.now(), mbps: speed, ping: p, ok: p != null,
+    time: Date.now(), mbps: speed, ping: p, ok: p != null, bytes: d.bytes, ms: Math.round(d.ms),
     lat: geo?.lat ?? null, lon: geo?.lon ?? null, acc: geo?.acc ?? null,
     net: netInfo(), label: $("label").value.trim().slice(0, 40),
   };
@@ -151,9 +159,9 @@ function netInfo() {
 function showNow(m) {
   if (!m.ok) {
     setGauge(0);
-    $("val").textContent = "0";
     $("word").textContent = "НЕТ СВЯЗИ";
-    $("status").textContent = "Интернет здесь не отвечает";
+    $("exact").textContent = "ТОЧНО: 0 бит/с · сервер не ответил за 12 с";
+    $("status").textContent = "Попробуйте выше или на открытом месте. Экстренно: 112 — работает через любого оператора";
     $("ledNet").className = "led off";
     resultBeep(1);
     return;
@@ -164,7 +172,8 @@ function showNow(m) {
   $("ping").textContent = m.ping;
   $("ledNet").className = "led " + (g.level >= 3 ? "on" : "warn");
   $("ledGps").className = "led " + (m.lat == null ? "off" : m.acc > 30 ? "warn" : "on");
-  $("status").textContent = m.lat == null ? "Место не определено — разрешите геолокацию" : `ЗАПИСАНО · точность места ±${Math.round(m.acc)} м`;
+  $("exact").textContent = `ТОЧНО: ${exactBits(m.mbps)} бит/с · ${String(m.bytes).replace(/\B(?=(\d{3})+(?!\d))/g, " ")} Б за ${(m.ms / 1000).toFixed(2).replace(".", ",")} с`;
+  $("status").textContent = `Можно: ${g.can}. ` + (m.lat == null ? "Место не определено — разрешите геолокацию" : `Записано, место ±${Math.round(m.acc)} м`);
   resultBeep(g.level);
 }
 
@@ -175,7 +184,7 @@ function render() {
   const b = P[0];
   if (b) {
     const g = grade(b.speed);
-    $("tinfo").innerHTML = `<span class="dot lv${g.level}" style="display:inline-block"></span> <b>${fmt(b.speed)} Мбит/с</b> · ${esc(b.label || "без метки")}`;
+    $("tinfo").innerHTML = `<span class="dot lv${g.level}" style="display:inline-block"></span> <b>${sp(b.speed)}</b> · ${esc(b.label || "без метки")}`;
     if (here) {
       const d = distance(here, b);
       $("tdist").textContent = d < 8 ? "ВЫ ЗДЕСЬ" : d < 1000 ? `${Math.round(d)} м` : `${fmt(d / 1000)} км`;
@@ -194,12 +203,12 @@ function render() {
   const top = P[0]?.speed || 1;
   $("places").innerHTML = P.slice(0, 20).map((p, i) => {
     const g = grade(p.speed);
-    return `<li><span class="dot lv${g.level}"></span><span class="grow"><b>${i + 1}. ${fmt(p.speed)} Мбит/с</b> · ${esc(p.label || "без метки")}<span class="dim">${here ? esc(hint(here, p)) + " · " : ""}замеров: ${p.count}</span><div class="minibar"><i style="width:${Math.max(4, (p.speed / top) * 100)}%"></i></div></span></li>`;
+    return `<li><span class="dot lv${g.level}"></span><span class="grow"><b>${i + 1}. ${sp(p.speed)}</b> · ${esc(p.label || "без метки")}<span class="dim">${here ? esc(hint(here, p)) + " · " : ""}замеров: ${p.count}</span><div class="minibar"><i style="width:${Math.max(4, (p.speed / top) * 100)}%"></i></div></span></li>`;
   }).join("") || `<li class="empty">Здесь появятся места, где вы сканировали</li>`;
 
   $("log").innerHTML = S.measures.map((m, i) => ({ m, i })).reverse().slice(0, 100).map(({ m, i }) => {
     const g = grade(m.mbps);
-    const s = m.ok ? `${fmt(m.mbps)} Мбит/с · ${m.ping} мс` : "нет связи";
+    const s = m.ok ? `${sp(m.mbps)} · ${m.ping} мс` : "нет связи";
     return `<li><span class="dot lv${m.ok ? g.level : 1}"></span><span class="grow">${when(m.time)} · <b>${s}</b>${m.label ? " · " + esc(m.label) : ""}${m.lat == null ? " · без места" : ""}</span><button class="x" data-del="${i}" title="Удалить">✕</button></li>`;
   }).join("") || `<li class="empty">Замеров пока нет</li>`;
   $("used").textContent = `ТРАФИК ${fmt(S.usedBytes / 1e6)} МБ`;
@@ -266,7 +275,11 @@ function drawMap(P) {
   layer = L.layerGroup().addTo(mapObj);
   for (const p of P) {
     L.circleMarker([p.lat, p.lon], { radius: 10, color: COLORS[grade(p.speed).level], fillOpacity: 0.8 })
-      .bindPopup(`${fmt(p.speed)} Мбит/с${p.label ? " · " + esc(p.label) : ""}`).addTo(layer);
+      .bindPopup(`${sp(p.speed)}${p.label ? " · " + esc(p.label) : ""}`).addTo(layer);
+  }
+  // Мёртвые зоны: где связи не было совсем.
+  for (const m of S.measures) {
+    if (!m.ok && m.lat != null) L.circleMarker([m.lat, m.lon], { radius: 5, color: "#ff3b30", fillOpacity: 0.4, dashArray: "2 3" }).bindPopup(`нет связи${m.label ? " · " + esc(m.label) : ""}`).addTo(layer);
   }
   if (here) L.circleMarker([here.lat, here.lon], { radius: 6, color: "#ffffff", fillOpacity: 1 }).bindPopup("Вы здесь").addTo(layer);
   const pts = P.map((p) => [p.lat, p.lon]);

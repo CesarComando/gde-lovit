@@ -31,18 +31,37 @@ export function mbps(bytes, ms) {
   return (bytes * 8) / (ms / 1000) / 1e6;
 }
 
-/** Оценка словами и цветом. */
+/** Оценка словами, цветом и что можно делать при такой связи. */
 export function grade(speed) {
-  if (speed >= 10) return { word: "отлично", level: 4 };
-  if (speed >= 3) return { word: "нормально", level: 3 };
-  if (speed >= 0.5) return { word: "слабо", level: 2 };
-  return { word: "очень плохо", level: 1 };
+  if (speed >= 10) return { word: "отлично", level: 4, can: "видео, звонки по видео" };
+  if (speed >= 3) return { word: "нормально", level: 3, can: "звонки в мессенджерах, фото" };
+  if (speed >= 0.5) return { word: "слабо", level: 2, can: "сообщения, почта, карта" };
+  if (speed >= 0.05) return { word: "едва", level: 1, can: "только текстовые сообщения" };
+  if (speed > 0) return { word: "почти нет", level: 1, can: "может пройти короткое сообщение" };
+  return { word: "нет связи", level: 1, can: "попробуйте выше или на открытом месте" };
 }
 
-/** Положение стрелки прибора 0..1 по логарифмической шкале 0,1–100 Мбит/с. */
+/** Скорость в удобных единицах: бит/с, кбит/с или Мбит/с. */
+export function speedParts(speed) {
+  const bps = speed * 1e6;
+  if (bps <= 0) return { value: "0", unit: "бит/с" };
+  if (bps < 1000) return { value: String(Math.round(bps)), unit: "бит/с" };
+  if (bps < 1e6) {
+    const k = bps / 1000;
+    return { value: (k < 10 ? k.toFixed(2) : k < 100 ? k.toFixed(1) : String(Math.round(k))).replace(".", ","), unit: "кбит/с" };
+  }
+  return { value: fmt(speed), unit: "Мбит/с" };
+}
+
+/** Точное число бит в секунду с пробелами: 482315 → «482 315». */
+export function exactBits(speed) {
+  return String(Math.round(speed * 1e6)).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+/** Положение стрелки прибора 0..1 по логарифмической шкале 1 кбит/с – 100 Мбит/с. */
 export function gaugePos(speed) {
-  if (!speed || speed <= 0.1) return 0;
-  return Math.min(1, Math.log10(speed / 0.1) / 3);
+  if (!speed || speed <= 0.001) return 0;
+  return Math.min(1, Math.log10(speed / 0.001) / 5);
 }
 
 /** Красиво: 0.56 → «0,56», 12.3 → «12». */
@@ -95,13 +114,13 @@ export function hint(here, best) {
 
 /** Таблица для Excel (CSV, разделитель «;»). */
 export function toCSV(measures) {
-  const head = "Дата;Время;Мбит/с;Пинг мс;Широта;Долгота;Точность м;Сеть;Метка";
+  const head = "Дата;Время;Мбит/с;Бит/с точно;Байт скачано;Время замера мс;Пинг мс;Широта;Долгота;Точность м;Сеть;Метка";
   const rows = measures.map((m) => {
     const d = new Date(m.time);
     const date = d.toLocaleDateString("ru-RU");
     const time = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
     const clean = (s) => String(s ?? "").replace(/[;\n\r]/g, " ");
-    return [date, time, fmt(m.mbps), m.ping ?? "", m.lat ?? "", m.lon ?? "", m.acc != null ? Math.round(m.acc) : "", clean(m.net), clean(m.label)].join(";");
+    return [date, time, fmt(m.mbps), Math.round(m.mbps * 1e6), m.bytes ?? "", m.ms != null ? Math.round(m.ms) : "", m.ping ?? "", m.lat ?? "", m.lon ?? "", m.acc != null ? Math.round(m.acc) : "", clean(m.net), clean(m.label)].join(";");
   });
   return [head, ...rows].join("\r\n");
 }
