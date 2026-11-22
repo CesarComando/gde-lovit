@@ -117,8 +117,40 @@ export function fmt(speed) {
  * Места: замеры ближе radius метров друг к другу считаются одним местом.
  * Скорость места — средняя по его замерам. Сортировка: лучшие сверху.
  */
-export function places(measures, radius = 15) {
-  const withGeo = measures.filter((m) => m.lat != null && m.lon != null && m.ok && plausible(m) && (m.acc == null || m.acc <= GPS_MAX_ERR));
+// ---------- Wi-Fi и мобильная сеть — сравниваем отдельно ----------
+
+/** Через что был замер: "wifi" | "cell" | "?" (iPhone и старые замеры — неизвестно). */
+export function linkOf(m) {
+  if (m.link === "wifi" || m.link === "cell") return m.link;
+  const n = String(m.net || "");
+  if (n.startsWith("wifi") || n.startsWith("ethernet")) return "wifi";
+  if (n.startsWith("cellular")) return "cell";
+  return "?";
+}
+
+/** Замер подходит к выбранному сравнению. Неизвестные (старые/iPhone без выбора) показываем в обоих. */
+export function sameLink(m, link) {
+  if (!link) return true;
+  const l = linkOf(m);
+  return l === "?" || l === link;
+}
+
+/**
+ * Общая оценка места 0–100: скорость (70%) и пинг (30%).
+ * Скорость — по той же шкале, что прибор (1 кбит/с … 100 Мбит/с). Пинг: 20 мс — отлично, 2000 мс — плохо.
+ * Для сообщений и звонков низкий пинг иногда важнее высокой скорости.
+ */
+export function placeScore(speed, ping) {
+  const s = gaugePos(speed);
+  const p = ping == null ? 0.5 : 1 - Math.min(1, Math.max(0, Math.log10(Math.max(ping, 1) / 20) / 2));
+  return Math.round(100 * (0.7 * s + 0.3 * p));
+}
+
+/** «Стабильно» — только если место перемеряли с перерывом (2 мин), а не три раза за минуту. */
+export const STABLE_GAP_MS = 120000;
+
+export function places(measures, radius = 15, link = null) {
+  const withGeo = measures.filter((m) => m.lat != null && m.lon != null && m.ok && plausible(m) && (m.acc == null || m.acc <= GPS_MAX_ERR) && sameLink(m, link));
   const groups = [];
   for (const m of withGeo) {
     const g = groups.find((g) => distance(g.center, m) <= radius);
@@ -134,20 +166,32 @@ export function places(measures, radius = 15) {
       const sp = g.items.map((i) => i.mbps);
       const med = median(sp);
       const spreadBig = sp.length >= 2 && med > 0 && (Math.max(...sp) - Math.min(...sp)) / med > 1;
+      const times = g.items.map((i) => i.time);
+      const span = Math.max(...times) - Math.min(...times);
+      const n = g.items.length;
+      const stability = n === 1 ? "1 замер — повторите"
+        : span < STABLE_GAP_MS ? `${n} ${n < 5 ? "замера" : "замеров"} подряд — повторите через 2 мин`
+        : spreadBig ? `разброс большой: ${n} ${n < 5 ? "замера" : "замеров"}`
+        : `стабильно: ${n} ${n < 5 ? "замера" : "замеров"}`;
+      const pingMed = median(g.items.map((i) => i.ping));
+      const quality = placeScore(med, pingMed);
+      const trust = n === 1 ? 0.7 : span < STABLE_GAP_MS ? 0.85 : 1; // меньше проверок — меньше доверия
       return {
         lat: g.center.lat,
         lon: g.center.lon,
         speed: med, // медиана — случайный пик не поднимает место наверх
-        ping: median(g.items.map((i) => i.ping)),
+        ping: pingMed,
+        quality,
+        stable: stability.startsWith("стабильно"),
         alt: avg(g.items.map((i) => i.alt).filter((a) => a != null)),
         count: g.items.length,
         bytes: g.items.reduce((s, i) => s + (i.bytes || 0), 0),
         acc: median(g.items.map((i) => i.acc)),
         ins: g.items.some((i) => i.ins),
-        stability: g.items.length === 1 ? "1 замер — повторите" : spreadBig ? `разброс большой: ${g.items.length} замера` : `стабильно: ${g.items.length} ${g.items.length < 5 ? "замера" : "замеров"}`,
+        stability,
         label: g.items.map((i) => i.label).filter(Boolean).at(-1) || "",
         last: Math.max(...g.items.map((i) => i.time)),
-        score: med * (g.items.length === 1 ? 0.7 : 1), // один замер — меньше доверия: случайный пик не обгонит проверенное место
+        score: quality * trust, // скорость + пинг, с поправкой на число проверок
       };
     })
     .sort((a, b) => b.score - a.score);
@@ -155,6 +199,32 @@ export function places(measures, radius = 15) {
 
 function avg(xs) {
   return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null;
+}
+
+/**
+ * ПОИСК ЛУЧШЕЙ ТОЧКИ («горячо — холодно»).
+ * hunt = { center, r, round, since }: вокруг центра 4 точки на r метров (С, В, Ю, З).
+ * Пока не все измерены — их и предлагаем. Когда все измерены:
+ *   лучшая из 5 (центр + 4) становится новым центром; если лучший — сам центр, круг сужается вдвое.
+ *   Когда круг меньше 5 м или прошло 4 круга — готово, лучшая точка найдена.
+ * Возвращает { spots, todo, done, best, next }.
+ */
+export function huntPlan(hunt, measures, link = null) {
+  const ms = measures.filter((m) => m.ok && m.lat != null && plausible(m) && (m.acc == null || m.acc <= GPS_MAX_ERR) && sameLink(m, link) && m.time >= (hunt.since || 0));
+  const near = Math.min(6, hunt.r * 0.6);
+  const scoreAt = (p) => {
+    const a = ms.filter((m) => distance(m, p) <= near);
+    return a.length ? placeScore(median(a.map((x) => x.mbps)), median(a.map((x) => x.ping))) : null;
+  };
+  const spots = [0, 90, 180, 270].map((h) => ({ ...moveBy(hunt.center, hunt.r, h), dir: SIDES[h / 45] }));
+  const center = { ...hunt.center, dir: "центр" };
+  const todo = [center, ...spots].filter((s) => scoreAt(s) == null);
+  if (todo.length) return { spots, todo, done: false };
+  const cands = [center, ...spots].map((s) => ({ ...s, score: scoreAt(s) }));
+  const best = cands.reduce((a, b) => (b.score > a.score ? b : a));
+  const r2 = best === cands[0] ? hunt.r / 2 : hunt.r;
+  if (r2 < 5 || hunt.round >= 4) return { spots, todo: [], done: true, best };
+  return { spots, todo: [], done: false, best, next: { center: { lat: best.lat, lon: best.lon }, r: r2, round: hunt.round + 1, since: hunt.since } };
 }
 
 /** Подсказка «куда идти» от текущей точки к лучшему месту. */
@@ -221,12 +291,16 @@ export function fixStatus({ ins, acc, ageSec, compassBad }) {
 }
 
 /** Журнал прогулки для разбора ошибок: время, режим, место, точность, шаги, курс и разброс компаса. */
-export function trackCSV(track) {
-  const head = "Время;Режим;Широта;Долгота;Точность м;Шагов всего;Курс °;Разброс компаса °;Длина шага см;Мбит/с;GPS-точка получена;GPS заявл. точность м";
-  const rows = track.map((r) => [
+export function trackCSV(track, { hideStartM = 0 } = {}) {
+  const head = "Время;Режим;Широта;Долгота;Точность м;Шагов всего;Курс °;Разброс компаса °;Длина шага см;Мбит/с;GPS-точка получена;GPS заявл. точность м;Отбраковка / событие";
+  // Скрыть начало маршрута (дом): координаты записей ближе hideStartM к первой точке не выгружаем.
+  const first = track.find((r) => r.lat != null);
+  const hide = (r) => hideStartM > 0 && first && r.lat != null && distance(first, r) < hideStartM;
+  const rows = track.map((r) => (hide(r) ? { ...r, lat: null, lon: null } : r)).map((r) => [
     new Date(r.t).toLocaleTimeString("ru-RU"), r.mode, r.lat?.toFixed(6) ?? "", r.lon?.toFixed(6) ?? "",
     r.acc != null ? Math.round(r.acc) : "", r.steps ?? "", r.hdg != null ? Math.round(r.hdg) : "", r.spread ?? "", r.stepCm ?? "",
     r.mbps != null ? fmt(r.mbps) : "", r.gpsT ? new Date(r.gpsT).toLocaleTimeString("ru-RU") : "", r.gpsAcc != null ? Math.round(r.gpsAcc) : "",
+    String(r.note || "").replace(/[;\n\r]/g, " "),
   ].join(";"));
   return [head, ...rows].join("\r\n");
 }
@@ -263,16 +337,17 @@ export function createGpsFilter({ good = 25, maxSpeed = 8 } = {}) {
       if (!ok) {
         badRun++;
         if (badRun >= 3) { state = "bad"; changed = "lost"; pend = []; }
-        return { good: state === "good", pos, acc: posAcc, changed };
+        return { good: state === "good", pos, acc: posAcc, changed, note: `отбраковка: плохая точка ±${Math.round(f.acc)} м (${badRun}/3 подряд)` };
       }
       badRun = 0;
       const dt = Math.max(1, (f.t - lastT) / 1000);
       const jump = distance(pos, f);
       if (jump > posAcc + f.acc + maxSpeed * dt) {
         // выброс? ждём подтверждения следующей точкой
-        if (cand && distance(cand, f) <= cand.acc + f.acc) { const m = wavg([cand, f]); pos = { lat: m.lat, lon: m.lon }; posAcc = m.acc; lastT = f.t; cand = null; }
-        else cand = { ...f };
-        return { good: true, pos, acc: posAcc, changed };
+        let note;
+        if (cand && distance(cand, f) <= cand.acc + f.acc) { const m = wavg([cand, f]); pos = { lat: m.lat, lon: m.lon }; posAcc = m.acc; lastT = f.t; cand = null; note = "скачок подтверждён второй точкой — место сдвинуто"; }
+        else { cand = { ...f }; note = `отбраковка: выброс GPS на ${Math.round(jump)} м — ждём подтверждения`; }
+        return { good: true, pos, acc: posAcc, changed, note };
       }
       cand = null; pos = { lat: f.lat, lon: f.lon }; posAcc = f.acc; lastT = f.t;
       return { good: true, pos, acc: posAcc, changed };

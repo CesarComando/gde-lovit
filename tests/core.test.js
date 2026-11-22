@@ -1,7 +1,7 @@
 // Проверки «сердца». Запуск: node --test tests/  (без интернета и без телефона)
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { altHint, altTrend, bearing, confidence, createGpsFilter, createStepDetector, distance, fixStatus, headingSpread, insError, moveBy, stepFromWalk, trackCSV, exactBits, fmt, gaugePos, grade, hint, mbps, median, netClass, offset, places, plausible, route, side, speedParts, toCSV } from "../core.js";
+import { altHint, altTrend, bearing, confidence, createGpsFilter, createStepDetector, huntPlan, linkOf, placeScore, distance, fixStatus, headingSpread, insError, moveBy, stepFromWalk, trackCSV, exactBits, fmt, gaugePos, grade, hint, mbps, median, netClass, offset, places, plausible, route, side, speedParts, toCSV } from "../core.js";
 
 const A = { lat: 55.8849, lon: 26.5009 };
 
@@ -138,7 +138,7 @@ test("точность крупно, компас, калибровка шага
   assert.equal(stepFromWalk(10, 50), null, "мало пройдено");
   assert.equal(stepFromWalk(100, 50), null, "200 см — так не шагают, ошибка GPS");
   const csv = trackCSV([{ t: 0, mode: "ИНС", lat: 1, lon: 2, acc: 15.2, steps: 40, hdg: 45.4, spread: 12, stepCm: 72, mbps: 1.5 }]);
-  assert.equal(csv.split("\r\n")[1].split(";").length, 12);
+  assert.equal(csv.split("\r\n")[1].split(";").length, 13);
 });
 
 test("GPS-фильтр: по серии, а не по одной точке", () => {
@@ -167,15 +167,71 @@ test("GPS-фильтр: по серии, а не по одной точке", ()
 test("места: медиана, стабильность, один пик не наверху", () => {
   const P = places([
     { ...A, mbps: 40, ok: true, time: 1, acc: 5 }, // одиночный пик
-    { lat: A.lat + 0.001, lon: A.lon, mbps: 30, ok: true, time: 2, acc: 5, bytes: 100 },
-    { lat: A.lat + 0.001, lon: A.lon, mbps: 31, ok: true, time: 3, acc: 5, bytes: 100 },
-    { lat: A.lat + 0.001, lon: A.lon, mbps: 90, ok: true, time: 4, acc: 5, bytes: 100 }, // скачок
+    { lat: A.lat + 0.001, lon: A.lon, mbps: 30, ok: true, time: 0, acc: 5, bytes: 100 },
+    { lat: A.lat + 0.001, lon: A.lon, mbps: 31, ok: true, time: 150e3, acc: 5, bytes: 100 },
+    { lat: A.lat + 0.001, lon: A.lon, mbps: 90, ok: true, time: 300e3, acc: 5, bytes: 100 }, // скачок
   ]);
   assert.equal(P[0].speed, 31, "медиана, а не среднее с пиком 90");
   assert.equal(P[0].count, 3);
   assert.equal(P[0].bytes, 300);
   assert.match(P[0].stability, /разброс большой: 3 замера/, "скачок 90 среди 30–31 честно отмечен");
   assert.equal(P[1].stability, "1 замер — повторите");
+});
+
+test("Wi-Fi и мобильная сеть отдельно; скорость + пинг; стабильность с перерывом", () => {
+  assert.equal(linkOf({ net: "wifi 4g" }), "wifi");
+  assert.equal(linkOf({ net: "cellular 3g" }), "cell");
+  assert.equal(linkOf({ link: "cell" }), "cell");
+  assert.equal(linkOf({ net: "" }), "?");
+  const B = { lat: A.lat + 0.001, lon: A.lon };
+  const ms = [
+    { ...A, mbps: 30, ping: 20, ok: true, time: 0, acc: 5, link: "wifi" },
+    { ...B, mbps: 3, ping: 60, ok: true, time: 0, acc: 5, link: "cell" },
+  ];
+  assert.equal(places(ms, 15, "cell").length, 1);
+  assert.equal(places(ms, 15, "cell")[0].speed, 3, "Wi-Fi не обгоняет мобильную");
+  assert.equal(places(ms, 15, "wifi")[0].speed, 30);
+  // быстро, но пинг почти секунда — хуже, чем чуть медленнее с хорошим пингом
+  assert.ok(placeScore(12, 30) > placeScore(20, 900));
+  // 3 замера за минуту — ещё не «стабильно»; с перерывом 2+ мин — стабильно
+  const quick = places([0, 20e3, 40e3].map((t) => ({ ...A, mbps: 5, ping: 50, ok: true, time: t, acc: 5 })));
+  assert.match(quick[0].stability, /повторите через 2 мин/);
+  const slow = places([0, 150e3].map((t) => ({ ...A, mbps: 5, ping: 50, ok: true, time: t, acc: 5 })));
+  assert.match(slow[0].stability, /^стабильно: 2 замера/);
+});
+
+test("поиск лучшей точки: предлагает соседние точки и сужает круг", () => {
+  const hunt = { center: A, r: 15, round: 1, since: 0 };
+  const m = (p, v, t) => ({ ...p, mbps: v, ping: 50, ok: true, time: t, acc: 5 });
+  let plan = huntPlan(hunt, []);
+  assert.equal(plan.todo.length, 5, "центр + 4 стороны");
+  const east = moveBy(A, 15, 90);
+  const ms = [m(A, 1, 1), m(moveBy(A, 15, 0), 0.5, 2), m(east, 8, 3), m(moveBy(A, 15, 180), 0.3, 4)];
+  plan = huntPlan(hunt, ms);
+  assert.equal(plan.todo.length, 1);
+  assert.equal(plan.todo[0].dir, "запад");
+  ms.push(m(moveBy(A, 15, 270), 0.4, 5));
+  plan = huntPlan(hunt, ms);
+  assert.ok(plan.next, "все измерены — новый круг");
+  assert.ok(distance(plan.next.center, east) < 1, "центр сдвинулся на восток, где лучше");
+  assert.equal(plan.next.r, 15);
+  // если лучший — сам центр, круг сужается; меньше 5 м — готово
+  const plan2 = huntPlan({ center: A, r: 7.5, round: 2, since: 0 }, [m(A, 9, 1), ...[0, 90, 180, 270].map((h, i) => m(moveBy(A, 7.5, h), 1, 2 + i))]);
+  assert.equal(plan2.done, true);
+  assert.ok(distance(plan2.best, A) < 1);
+});
+
+test("журнал прогулки: событие и скрытие начала маршрута", () => {
+  const tr = [
+    { t: 0, mode: "GPS", lat: A.lat, lon: A.lon, note: "" },
+    { t: 1, mode: "ПАУЗА", note: "экран погас; трек приостановлен" },
+    { t: 2, mode: "GPS", lat: A.lat + 0.005, lon: A.lon, note: "отбраковка: выброс GPS" },
+  ];
+  const rows = trackCSV(tr, { hideStartM: 200 }).split("\r\n");
+  assert.equal(rows[0].split(";").length, 13);
+  assert.equal(rows[1].split(";")[2], "", "дом скрыт");
+  assert.ok(rows[3].split(";")[2] !== "", "дальше 200 м — видно");
+  assert.match(rows[2], /трек приостановлен/);
 });
 
 test("подсказки по высоте", () => {

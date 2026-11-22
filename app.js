@@ -1,5 +1,5 @@
 // Окно «детектора»: прибор, скан, компас к лучшему месту, звук. Расчёты — в core.js.
-import { altHint, altTrend, bearing, confidence, createGpsFilter, createStepDetector, distance, fixStatus, headingSpread, insError, moveBy, netClass, stepFromWalk, trackCSV, median, offset, plausible, route, exactBits, fmt, gaugePos, grade, hint, mbps, places, side, speedParts, toCSV } from "./core.js";
+import { altHint, altTrend, bearing, confidence, createGpsFilter, createStepDetector, huntPlan, linkOf, placeScore, distance, fixStatus, headingSpread, insError, moveBy, netClass, stepFromWalk, trackCSV, median, offset, plausible, route, exactBits, fmt, gaugePos, grade, hint, mbps, places, side, speedParts, toCSV } from "./core.js";
 
 // Предохранитель: ответ засчитываем, только если он пришёл от сервера замера, а не от страницы входа Wi-Fi и т.п.
 let portal = false;
@@ -126,7 +126,14 @@ async function download(pingMs, opt = {}) {
 }
 
 let busy = false;
+function logEvent(mode, note) {
+  S.track = S.track || [];
+  S.track.push({ t: Date.now(), mode, lat: here?.lat, lon: here?.lon, acc: hereAcc, steps: insSteps, hdg: heading, spread, note });
+  if (S.track.length > 5000) S.track.splice(0, S.track.length - 5000);
+  save(); updTrackInfo?.();
+}
 function badMeasure() {
+  logEvent("СКАН", "отбраковка: невозможный результат замера — не сохранён");
   $("word").textContent = "ОШИБКА ЗАМЕРА";
   $("exact").textContent = "Число получилось невозможным — оно не сохранено";
   $("status").textContent = "Нажмите СКАН ещё раз";
@@ -168,7 +175,7 @@ async function measure() {
   const speed = samples.length ? median(samples.map((x) => x.mbps)) : 0;
   const m = {
     time: Date.now(), mbps: speed, ping: p, ok: p != null, bytes: d.bytes, ms: Math.round(d.ms),
-    samples: samples.map((x) => Math.round(x.mbps * 1000) / 1000), ins: insMode || undefined,
+    samples: samples.map((x) => Math.round(x.mbps * 1000) / 1000), ins: insMode || undefined, link: curLink() || S.cmp,
     lat: geo?.lat ?? null, lon: geo?.lon ?? null, acc: geo?.acc ?? null, alt: geo?.alt ?? null,
     net: netInfo(), label: $("label").value.trim().slice(0, 40),
   };
@@ -178,6 +185,7 @@ async function measure() {
   if (!plausible(m)) { badMeasure(); return; }
   S.measures.push(m);
   save();
+  logEvent("СКАН", m.ok ? `замеры: ${(m.samples || []).map((x) => sp(x)).join(" / ")} → медиана ${sp(m.mbps)}, пинг ${m.ping} мс, сеть ${linkOf(m)}${portal ? "; был ответ не от сервера замера" : ""}` : `нет связи${portal ? " (ответил не сервер замера — Wi-Fi просит вход?)" : ""}`);
   showNow(m);
   render();
   if (!searching) document.querySelector(".gaugebox").classList.remove("scanning");
@@ -195,6 +203,7 @@ function showGen(speed, ping) {
 }
 function tag(speed, ping) { const c = netClass(speed, ping); return c ? `<span class="tag" title="Оценка по качеству связи, не настоящий тип сети">≈${c}</span>` : ""; }
 // Через что идёт интернет: Wi-Fi или мобильная сеть (Android Chrome сообщает, iPhone — нет).
+function curLink() { const t = navigator.connection?.type; return t === "wifi" || t === "ethernet" ? "wifi" : t === "cellular" ? "cell" : null; }
 function linkType() {
   const t = navigator.connection?.type;
   return t === "wifi" ? "WI-FI" : t === "cellular" ? "МОБ." : t === "ethernet" ? "КАБЕЛЬ" : t === "none" ? "НЕТ" : "СЕТЬ";
@@ -234,12 +243,12 @@ async function searchLoop() {
       const raw = await probe();
       if (!searching) break;
       S.usedBytes += raw.bytes;
-      if (!plausible(raw)) { await sleep(1000); continue; }
+      if (!plausible(raw)) { logEvent("ПОИСК", `отбраковка: невозможный замер (${sp(raw.mbps)}, ${raw.ms} мс)`); await sleep(1000); continue; }
       if (raw.ok) recent.push(raw.mbps); else recent.length = 0;
       if (recent.length > 3) recent.shift();
       const r = raw.ok ? { ...raw, mbps: median(recent) } : raw; // середина из последних 3 — без случайных скачков
       lastMbps = r.ok ? r.mbps : 0;
-      const m = { time: Date.now(), ...r, lat: here?.lat ?? null, lon: here?.lon ?? null, acc: hereAcc, alt: hereAlt, ins: insMode || undefined, net: netInfo(), label: $("label").value.trim().slice(0, 40) };
+      const m = { time: Date.now(), ...r, lat: here?.lat ?? null, lon: here?.lon ?? null, acc: hereAcc, alt: hereAlt, ins: insMode || undefined, link: curLink() || S.cmp, net: netInfo(), label: $("label").value.trim().slice(0, 40) };
       showNow(m, true);
       geigerRate(r.ok ? gaugePos(r.mbps) : 0);
       if (prevOk === false && r.ok) alarm();
@@ -306,7 +315,7 @@ function showNow(m, quiet = false) {
 // ---------- Цель и списки ----------
 let here = null, hereAcc = null, hereAlt = null, heading = null;
 function render() {
-  const P = places(S.measures);
+  const P = places(S.measures, 15, S.cmp);
   const b = P[0];
   path = here ? route(here, P) : [];
   const next = path[0];
@@ -330,6 +339,7 @@ function render() {
     $("tnote").textContent = b ? "Нажмите СКАН или включите ПОИСК — локатор поведёт" : "Сделайте замеры в разных местах — локатор построит путь";
     $("tgoal").textContent = "";
   }
+  huntRender();
   drawRadar(P);
   const trend = altTrend(S.measures);
   $("trend").textContent = trend ? "⛰ " + trend : "";
@@ -381,6 +391,10 @@ function drawRadar(P = lastP) {
       const [nx, ny] = line[1]; h += `<circle class="next" cx="${nx}" cy="${ny}" r="9"/>`;
       const [gx, gy] = line.at(-1); h += `<circle class="goal" cx="${gx}" cy="${gy}" r="8"/><circle class="goal" cx="${gx}" cy="${gy}" r="3"/>`;
     }
+  }
+  if (here) for (const s of huntSpots) {
+    const [x, y] = xy(offset(here, s));
+    h += `<circle cx="${x}" cy="${y}" r="7" fill="${huntTodo.includes(s) ? "none" : "#39d0ff55"}" stroke="#39d0ff" stroke-width="1.5" stroke-dasharray="${huntTodo.includes(s) ? "3 3" : "0"}"/>`;
   }
   h += `</g>`;
   h += here ? `<path class="me" d="M0 -9 L6 6 L0 3 L-6 6 Z"/>` : `<text class="rl" x="0" y="4" text-anchor="middle">НЕТ GPS</text>`;
@@ -438,7 +452,7 @@ function ensureMap() {
       if (tileErr >= 6 && tileOk === 0 && view === "map") { toast("Карта этого места не сохранена и нет интернета — показываю РАДАР"); setView("radar", false); }
     });
   }
-  drawMap(places(S.measures));
+  drawMap(places(S.measures, 15, S.cmp));
   setTimeout(() => mapObj.invalidateSize(), 60);
 }
 function drawMap(P) {
@@ -458,6 +472,11 @@ function drawMap(P) {
     const nx = path[0], g = path.at(-1);
     L.circleMarker([nx.lat, nx.lon], { radius: 14, color: "#2dff7a", fill: false, weight: 2 }).bindPopup("Следующая точка").addTo(layer);
     L.circleMarker([g.lat, g.lon], { radius: 16, color: "#ffb020", fill: false, weight: 3 }).bindPopup("Цель").addTo(layer);
+  }
+  for (const s of huntSpots) {
+    const todo = huntTodo.includes(s);
+    L.circleMarker([s.lat, s.lon], { radius: 11, color: "#39d0ff", weight: 2, fill: !todo, fillOpacity: 0.25, dashArray: todo ? "4 4" : null })
+      .bindPopup(todo ? `Проверь здесь (${s.dir}) — дойди и нажми СКАН` : `Проверено (${s.dir})`).addTo(layer);
   }
   if (here) {
     if (hereAcc) L.circle([here.lat, here.lon], { radius: hereAcc, color: insMode ? "#ffb020" : "#2dff7a", weight: 1, fillOpacity: 0.08 }).addTo(layer);
@@ -489,6 +508,9 @@ function onGps(p) {
   lastRawFix = { t: p.timestamp || Date.now(), acc };
   hereAlt = p.coords.altitude ?? hereAlt;
   const f = gpsFilter({ t: p.timestamp || Date.now(), lat: p.coords.latitude, lon: p.coords.longitude, acc });
+  if (f.note && (searching || insMode || S.hunt)) logEvent("GPS", f.note);
+  if (f.changed === "lost") logEvent("GPS", "GPS потерян: 3 плохие точки подряд — переход на шаги");
+  if (f.changed === "back") logEvent("GPS", "GPS вернулся: 2 согласованные точки — место уточнено");
   if (f.good) {
     autoCalibrate(p, acc);
     if (insMode) { insMode = false; toast(f.changed === "back" ? "📡 GPS вернулся — место уточнено по 2 согласованным точкам" : "📡 GPS снова отвечает — место уточнено"); }
@@ -555,7 +577,7 @@ function updFix() {
   $("scSub").textContent = !here ? "Разрешите геолокацию — без неё локатор не работает"
     : insMode ? `GPS временно нет — продолжаю вести по шагам · ${insSteps} шаг.${compassBad ? " · направление неточное" : ""}`
     : stale ? "GPS давно не отвечал — позиция устаревает"
-    : compassBad ? "Место по спутникам · компас «гуляет»" : "Место по спутникам";
+    : (compassBad ? "Компас «гуляет». " : "") + "Заявленная точность GPS: с вероятностью ~68% вы внутри этого круга";
   $("scBadge").textContent = insMode ? "ИНС ВКЛ" : !here ? "НЕТ GPS" : stale ? "GPS ?" : "GPS";
   $("statusCard").className = "panel statuscard" + (insMode ? " ins" : !here || stale ? " bad" : "");
 }
@@ -609,7 +631,7 @@ setInterval(() => {
 function updTrackInfo() { const n = (S.track || []).length; $("trackInfo").textContent = n ? `Записей: ${n} (~${Math.round((n * 5) / 60)} мин)` : "Пока пусто."; }
 $("trackCsv").onclick = () => {
   if (!(S.track || []).length) { toast("Журнал прогулки пуст — включите ПОИСК или ИНС и пройдитесь"); return; }
-  const blob = new Blob(["\ufeff" + trackCSV(S.track)], { type: "text/csv;charset=utf-8" });
+  const blob = new Blob(["\ufeff" + trackCSV(S.track, { hideStartM: $("hideHome").checked ? 200 : 0 })], { type: "text/csv;charset=utf-8" });
   const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: `gde-lovit-progulka-${new Date().toISOString().slice(0, 16).replace(":", "-")}.csv` });
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
@@ -655,7 +677,18 @@ $("stepcm").onchange = (e) => { const v = Math.round(Number(e.target.value)); if
 $("ins").checked = S.ins !== false;
 $("stepcm").value = S.stepCm || 70;
 // Экран снова включили — браузер снимает запрет сна, просим заново.
-document.addEventListener("visibilitychange", async () => { if (searching && document.visibilityState === "visible") { try { wake = await navigator.wakeLock?.request("screen"); } catch { /* ок */ } } });
+let hiddenAt = null;
+document.addEventListener("visibilitychange", async () => {
+  const active = searching || insMode || S.hunt;
+  if (document.visibilityState === "hidden") {
+    hiddenAt = Date.now();
+    if (active) logEvent("ПАУЗА", "экран погас или приложение свёрнуто — трек приостановлен (браузер останавливает таймеры)");
+  } else {
+    if (active && hiddenAt) logEvent("ПРОДОЛЖЕНО", `трек возобновлён, пауза ${Math.round((Date.now() - hiddenAt) / 1000)} с`);
+    hiddenAt = null;
+    if (searching) { try { wake = await navigator.wakeLock?.request("screen"); wake?.addEventListener?.("release", () => { if (searching && document.visibilityState === "visible") logEvent("ПАУЗА?", "браузер снял запрет сна экрана"); }); } catch { /* ок */ } }
+  }
+});
 $("sound").onchange = (e) => { S.sound = e.target.checked; save(); if (S.sound) { audio()?.resume?.(); click(); } };
 $("eco").onchange = (e) => { S.eco = e.target.checked; save(); };
 $("forest").onchange = (e) => { S.forest = e.target.checked; save(); applyForest(); toast(S.forest ? "ЛЕС: поиск раз в 15 с, малый трафик, без анимаций. Убавьте яркость экрана" : "ЛЕС выключен"); };
@@ -672,6 +705,57 @@ function showTab(t) {
 }
 document.querySelectorAll(".tb").forEach((b) => { b.onclick = () => showTab(b.dataset.go); });
 $("viewMap").onclick = () => setView("map");
+// ---------- Сравнение: мобильная сеть / Wi-Fi ----------
+function setCmp(c, why = "") {
+  S.cmp = c; save();
+  document.querySelectorAll(".cmpb").forEach((b) => b.classList.toggle("on", b.dataset.cmp === c));
+  const known = curLink();
+  $("cmpNote").textContent = known ? `Сейчас интернет через ${known === "wifi" ? "Wi-Fi" : "мобильную сеть"} — замеры помечаются сами` : "Телефон не сообщает тип сети (iPhone) — выберите, через что сейчас интернет: так будут помечены замеры";
+  mapFitted = false; render();
+  if (why) toast(why);
+}
+document.querySelectorAll(".cmpb").forEach((b) => { b.onclick = () => setCmp(b.dataset.cmp, b.dataset.cmp === "wifi" ? "Сравниваю места только по Wi-Fi" : "Сравниваю места только по мобильной сети"); });
+navigator.connection?.addEventListener?.("change", () => { const l = curLink(); if (l && l !== S.cmp) setCmp(l, l === "wifi" ? "Интернет теперь через Wi-Fi — сравниваю Wi-Fi" : "Интернет теперь через мобильную сеть — сравниваю её"); });
+
+// ---------- ПОИСК ЛУЧШЕЙ ТОЧКИ («горячо — холодно») ----------
+let huntSpots = [], huntTodo = [], lastHuntKey = null;
+function huntRender() {
+  huntSpots = []; huntTodo = [];
+  $("hunt").classList.toggle("on", !!S.hunt);
+  $("hunt").textContent = S.hunt ? "■ ОСТАНОВИТЬ ПОИСК ТОЧКИ" : "🎯 ПОИСК ЛУЧШЕЙ ТОЧКИ";
+  if (!S.hunt) return;
+  let plan = huntPlan(S.hunt, S.measures, S.cmp);
+  for (let i = 0; plan.next && i < 5; i++) { S.hunt = plan.next; save(); toast(`🎯 Круг ${S.hunt.round}: ${S.hunt.r < 15 ? "сужаю поиск" : "сдвигаю центр туда, где лучше"}`); plan = huntPlan(S.hunt, S.measures, S.cmp); }
+  if (plan.done) {
+    S.hunt = null; save();
+    $("hunt").classList.remove("on"); $("hunt").textContent = "🎯 ПОИСК ЛУЧШЕЙ ТОЧКИ";
+    toast(`🎯 Лучшая точка найдена: оценка ${plan.best.score} из 100 — локатор ведёт к ней`);
+    logEvent("ТОЧКА", `поиск лучшей точки завершён: оценка ${plan.best.score}`);
+    if (S.sound) [0, 1, 2].forEach((i) => setTimeout(() => click(900 + i * 300, 0.12, 0.35), i * 160));
+    return;
+  }
+  huntSpots = plan.spots; huntTodo = plan.todo;
+  if (!here || !huntTodo.length) return;
+  const t = huntTodo.reduce((a, b) => (distance(here, b) < distance(here, a) ? b : a));
+  const d = distance(here, t);
+  path = [t];
+  $("tdist").textContent = d < 6 ? "ВЫ НА ТОЧКЕ → СКАН" : `ПРОВЕРЬ: ${Math.round(d)} м → ${side(bearing(here, t)).toUpperCase()}`;
+  $("tinfo").innerHTML = `<span class="huntline">🎯 ПОИСК ЛУЧШЕЙ ТОЧКИ · круг ${S.hunt.round} · осталось проверить ${huntTodo.length} из 5</span>`;
+  $("tnote").textContent = `Точки вокруг центра на ${Math.round(S.hunt.r)} м: ${t.dir === "центр" ? "центр" : "на " + t.dir}. Дойдите и нажмите СКАН.`;
+  $("tgoal").textContent = "";
+  const key = `${t.lat.toFixed(5)}${d < 6}`;
+  if (d < 6 && lastHuntKey !== key) { if (S.sound) click(1400, 0.1, 0.35); try { navigator.vibrate?.([80, 60, 80]); } catch { /* нет */ } }
+  lastHuntKey = key;
+}
+$("hunt").onclick = () => {
+  audio()?.resume?.(); startCompass(); startMotion();
+  if (S.hunt) { S.hunt = null; save(); render(); toast("Поиск точки остановлен"); return; }
+  if (!here) { toast("Нужно место: разрешите геолокацию и подождите GPS"); return; }
+  S.hunt = { center: { ...here }, r: 15, round: 1, since: Date.now() }; save();
+  toast("🎯 Начинаю здесь: замер в центре, потом 4 точки вокруг на 15 м");
+  logEvent("ТОЧКА", `поиск лучшей точки начат, сеть ${S.cmp === "wifi" ? "Wi-Fi" : "мобильная"}`);
+  render(); measure();
+};
 $("viewRadar").onclick = () => setView("radar");
 $("log").onclick = (e) => {
   const i = e.target.dataset?.del;
@@ -708,6 +792,7 @@ const last = S.measures.at(-1);
 if (last?.ok) { setGauge(last.mbps); showGen(last.mbps, last.ping); $("word").textContent = grade(last.mbps).word.toUpperCase() + " (ПРОШЛЫЙ)"; $("ping").textContent = last.ping; }
 render();
 showTab(S.tab || "map");
+setCmp(curLink() || S.cmp || "cell");
 setView(S.view || "map", false);
 updStepInfo(); updTrackInfo(); updFix();
 if (!S.introDone) showIntro(0);

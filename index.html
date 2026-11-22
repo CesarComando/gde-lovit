@@ -41,8 +41,13 @@
             <button id="viewMap" class="segb on" role="tab">КАРТА</button>
             <button id="viewRadar" class="segb" role="tab">РАДАР</button>
           </div>
-          <span class="dim" id="scale"></span>
+          <div class="seg" title="Сравнивать отдельно: мобильная сеть и Wi-Fi">
+            <button class="segb cmpb" data-cmp="cell">МОБ.</button>
+            <button class="segb cmpb" data-cmp="wifi">WI-FI</button>
+          </div>
         </div>
+        <div class="cmpnote dim" id="cmpNote"></div>
+        <div class="dim scale" id="scale"></div>
         <div id="map"></div>
         <svg id="radar" class="radar hidden" viewBox="-115 -115 230 230" aria-label="Радар: вы в центре, точки — замеры, линия — путь к хорошей зоне"></svg>
         <div class="tdist" id="tdist">—</div>
@@ -75,6 +80,7 @@
       <div class="panel controls">
         <input id="label" type="text" maxlength="40" placeholder="› метка места: крыльцо, у окна…" />
         <button id="go" class="scan"><span>СКАН</span></button>
+        <button id="hunt" class="huntb">🎯 ПОИСК ЛУЧШЕЙ ТОЧКИ</button>
         <div class="switches">
           <label class="sw"><input id="search" type="checkbox" /><span>ПОИСК ∞</span></label>
           <label class="sw"><input id="ins" type="checkbox" /><span>ИНС 👣</span></label>
@@ -86,8 +92,10 @@
     <!-- ================= МЕСТА ================= -->
     <section class="tab hidden" data-tab="places">
       <div class="panel">
-        <div class="phead"><div class="ptitle">МЕСТА · ЛУЧШИЕ СВЕРХУ</div></div>
-        <p class="dim placenote">Место = замеры в радиусе 15 м. Скорость и пинг — медиана (середина) всех замеров места, чтобы случайный пик не поднимал место наверх. Место с одним замером — «повторите».</p>
+        <div class="phead"><div class="ptitle">МЕСТА · ЛУЧШИЕ СВЕРХУ</div>
+          <div class="seg"><button class="segb cmpb" data-cmp="cell">МОБ.</button><button class="segb cmpb" data-cmp="wifi">WI-FI</button></div>
+        </div>
+        <p class="dim placenote">Место = замеры в радиусе 15 м. Скорость и пинг — медиана (середина) всех замеров места, чтобы случайный пик не поднимал место наверх. Порядок — по общей оценке: скорость (70%) и пинг (30%). «Стабильно» — только если место перемерили с перерывом от 2 минут. Мобильная сеть и Wi-Fi сравниваются отдельно.</p>
         <div class="trend" id="trend"></div>
         <ol id="places" class="list"></ol>
       </div>
@@ -130,7 +138,8 @@
           <p class="dim">Если «гуляет»: уберите телефон от металла и магнитов (чехол с магнитом, машина), проведите телефоном восьмёрку в воздухе.</p>
 
           <h4>ЖУРНАЛ ПРОГУЛКИ</h4>
-          <p class="dim">Пока включены ПОИСК или ИНС, каждые 5 с записывается: время, режим GPS/ИНС, место, точность, число шагов, курс и разброс компаса. После проверки скачайте и пришлите — по нему видно, где ошибся расчёт.</p>
+          <p class="dim">Пока включены ПОИСК или ИНС, каждые 5 с записывается: время, режим GPS/ИНС, место, точность, число шагов, курс и разброс компаса, время и заявленная точность каждой GPS-точки. Отдельно — события: паузы (экран погас), отбракованные точки и замеры с причиной, все 3 результата каждого СКАНа. После проверки скачайте и пришлите — по нему видно, где ошибся расчёт.</p>
+          <label class="chk"><input id="hideHome" type="checkbox" checked /> Скрыть начало маршрута (первые 200 м — например, дом) при выгрузке</label>
           <div class="row"><button id="trackCsv" class="mini">СКАЧАТЬ ЖУРНАЛ</button><button id="trackClear" class="mini danger">ОЧИСТИТЬ</button></div>
           <p class="dim" id="trackInfo"></p>
 
